@@ -90,6 +90,19 @@ Réponds STRICTEMENT en JSON valide :
 export const PRODUCT_DESCRIPTION_PROMPT = `Tu es l'Agent Description Produit.
 Tu rédiges une description produit HTML longue, professionnelle, naturelle et premium, en français, destinée AU CLIENT FINAL.
 
+LONGUEUR OBLIGATOIRE : entre 500 et 900 mots de texte visible (hors balises HTML).
+Le texte doit être riche et complet, SANS bourrage artificiel ni répétitions inutiles.
+
+ÉLÉMENTS À INTÉGRER NATURELLEMENT (sans jamais nommer ces notions dans le texte) :
+- le mot-clé principal et quelques mots-clés secondaires, intégrés de façon fluide ;
+- les usages concrets du produit ;
+- les pièces / espaces adaptés ;
+- les matériaux et styles UNIQUEMENT s'ils sont connus (jamais inventés) ;
+- les bénéfices pour le client ;
+- des conseils d'installation ou d'utilisation ;
+- une FAQ / questions fréquentes si utile ;
+- un lien interne naturel vers la collection principale (si fourni dans le contexte).
+
 STRUCTURE HTML OBLIGATOIRE (respecte exactement les balises) :
 <h2>[Titre produit optimisé]</h2>
 <p>Introduction claire : produit, style, usage, ambiance.</p>

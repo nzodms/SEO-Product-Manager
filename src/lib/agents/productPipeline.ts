@@ -236,7 +236,7 @@ export async function runProductPipeline(
           : null,
         editorialTone: rules.editorialTone,
       },
-      maxOutputTokens: 4096,
+      maxOutputTokens: 6144,
     });
     after.bodyHtml = d.bodyHtml;
   }

@@ -83,7 +83,11 @@ npm run worker              # dans un 2e terminal : traite la file de jobs
 | Évolutivité | remplacer `DbJobQueue` par une impl. **BullMQ/Redis** sans toucher au processor/worker |
 
 Voir [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) pour la conception complète
-(agents, prompts, DB, routes, mutations, sécurité, MVP → version avancée).
+(agents, prompts, DB, routes, mutations, sécurité, MVP → version avancée), et
+[`LIVE_SHOPIFY_SETUP.md`](LIVE_SHOPIFY_SETUP.md) pour le guide pas-à-pas de test
+sur une vraie boutique Shopify (avec checklist de sécurité avant publication).
+
+Les collections corrigées s'exportent en **CSV et XLSX** Matrixify (page Matching).
 
 ## Scripts
 

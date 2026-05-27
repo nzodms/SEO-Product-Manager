@@ -73,7 +73,7 @@ export default function MatchingPage() {
   async function exportMatrixify() {
     if (!collectionsCsv) { setMsg("Charge l'export collections Matrixify."); return; }
     setBusy(true);
-    setMsg("Génération du fichier Matrixify corrigé…");
+    setMsg("Génération du fichier Matrixify corrigé (CSV)…");
     const r = await fetch("/api/migration/export/matrixify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -84,7 +84,33 @@ export default function MatchingPage() {
     if (!r.ok) { setMsg(`Erreur : ${d.error}`); return; }
     setReport(d.report);
     downloadText("collections-matrixify-corrige.csv", d.csv);
-    setMsg("Fichier Matrixify corrigé téléchargé.");
+    setMsg("Fichier Matrixify corrigé (CSV) téléchargé.");
+  }
+
+  async function exportMatrixifyXlsx() {
+    if (!collectionsCsv) { setMsg("Charge l'export collections Matrixify."); return; }
+    setBusy(true);
+    setMsg("Génération du fichier Matrixify corrigé (XLSX)…");
+    const r = await fetch("/api/migration/export/matrixify-xlsx", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ collectionsCsv, handleMap }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      setBusy(false);
+      setMsg(`Erreur : ${d.error ?? r.statusText}`);
+      return;
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "collections-matrixify-corrige.xlsx";
+    a.click();
+    URL.revokeObjectURL(url);
+    setBusy(false);
+    setMsg("Fichier Matrixify corrigé (XLSX) téléchargé.");
   }
 
   function exportMatchReport() {
@@ -115,7 +141,10 @@ export default function MatchingPage() {
       <div className="flex flex-wrap items-center gap-2">
         <button className="btn-primary" disabled={busy} onClick={runMatch}>Lancer le matching</button>
         <button className="btn-secondary" disabled={busy || !matches.length || !collectionsCsv} onClick={exportMatrixify}>
-          Export Matrixify corrigé
+          Export Matrixify CSV
+        </button>
+        <button className="btn-secondary" disabled={busy || !matches.length || !collectionsCsv} onClick={exportMatrixifyXlsx}>
+          Export Matrixify XLSX
         </button>
         <button className="btn-secondary" disabled={!matches.length} onClick={exportMatchReport}>Rapport matching CSV</button>
         <button className="btn-secondary" disabled={!matches.length} onClick={exportErrorsReport}>Rapport erreurs CSV</button>

@@ -172,17 +172,17 @@ const EXPORT_HEADERS = [
   "Product: Position",
 ];
 
-// Rebuilds a Matrixify-compatible Custom Collections CSV:
+// Rebuilds a Matrixify-compatible Custom Collections dataset:
 // - keeps every collection (including empty ones),
 // - replaces old product handles with the matched new ones,
 // - clears old Product: ID (never reuse IDs across shops),
 // - keeps positions,
 // - drops associations whose product was not matched (reported, never silently shipped).
-export function rebuildMatrixifyCollections(
+export function buildCorrectedCollections(
   collections: ParsedCollection[],
   handleMap: Record<string, string>
-): { csv: string; report: RebuildReport } {
-  const out: Record<string, string>[] = [];
+): { headers: string[]; rows: Record<string, string>[]; report: RebuildReport } {
+  const rows: Record<string, string>[] = [];
   const report: RebuildReport = {
     collectionsKept: 0,
     associationsKept: 0,
@@ -192,7 +192,7 @@ export function rebuildMatrixifyCollections(
 
   for (const c of collections) {
     // Collection header row (preserves empty collections too).
-    out.push({
+    rows.push({
       Handle: c.handle,
       Title: c.title,
       "Body HTML": c.bodyHtml,
@@ -213,7 +213,7 @@ export function rebuildMatrixifyCollections(
         report.notFound.push({ collection: c.handle, oldHandle: p.productHandle });
         continue;
       }
-      out.push({
+      rows.push({
         Handle: c.handle,
         Title: "",
         "Body HTML": "",
@@ -229,5 +229,13 @@ export function rebuildMatrixifyCollections(
     }
   }
 
-  return { csv: toCsv(EXPORT_HEADERS, out), report };
+  return { headers: EXPORT_HEADERS, rows, report };
+}
+
+export function rebuildMatrixifyCollections(
+  collections: ParsedCollection[],
+  handleMap: Record<string, string>
+): { csv: string; report: RebuildReport } {
+  const { headers, rows, report } = buildCorrectedCollections(collections, handleMap);
+  return { csv: toCsv(headers, rows), report };
 }
