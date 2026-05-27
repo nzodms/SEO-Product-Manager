@@ -11,20 +11,23 @@ rollback.
 ## Stack
 
 - **Next.js 14** (App Router) + TypeScript + Tailwind
-- **Prisma** (SQLite en dev, Postgres en prod)
+- **Prisma** + **PostgreSQL** (requis en local comme en production)
 - **Shopify Admin GraphQL API** (client maison, zéro dépendance)
 - **Gemini 2.5 Flash** par défaut, via une couche provider **interchangeable**
   (Groq / OpenAI / Anthropic ajoutables sans toucher aux agents)
 
 ## Démarrage
 
+Prérequis : un **PostgreSQL** accessible (local ou hébergé). Renseigne son URL
+dans `DATABASE_URL` (jamais `file:./dev.db`).
+
 ```bash
-cp .env.example .env        # puis renseigner GEMINI_API_KEY + APP_ENCRYPTION_KEY
+cp .env.example .env        # renseigner DATABASE_URL (Postgres) + GEMINI_API_KEY + APP_ENCRYPTION_KEY
 npm install
-npm run db:push             # crée le schéma SQLite
+npm run db:push             # crée les tables dans la base Postgres
 npm run db:seed             # (optionnel) bases de mots-clés par niche
 npm run dev                 # http://localhost:3000  (interface)
-npm run worker              # dans un 2e terminal : traite la file de jobs
+npm run worker              # dans un 2e terminal : traite la file de jobs (local)
 ```
 
 > L'**interface** (`npm run dev`) met les tâches en file ; le **worker**
@@ -36,7 +39,7 @@ npm run worker              # dans un 2e terminal : traite la file de jobs
 |---|---|
 | `GEMINI_API_KEY` | Clé Gemini. **Lue uniquement via `process.env`, jamais en dur, jamais loggée, jamais renvoyée au client.** |
 | `APP_ENCRYPTION_KEY` | Secret servant à chiffrer (AES-256-GCM) les tokens Shopify stockés. |
-| `DATABASE_URL` | `file:./dev.db` en local, URL Postgres en prod. |
+| `DATABASE_URL` | **URL PostgreSQL** (local et prod). Jamais `file:./dev.db` — SQLite ne marche pas sur Vercel. |
 | `DEFAULT_AI_PROVIDER` / `DEFAULT_AI_MODEL` | Provider/modèle par défaut. |
 
 > 🔐 `.env` est git-ignoré. Ne committez **jamais** de clé. Si une clé a été

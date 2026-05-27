@@ -1,14 +1,15 @@
 // SEO Product Manager — data model.
-// Uses SQLite for local dev; switch `provider` to "postgresql" for prod.
-// NOTE: SQLite has no native enums, so status-like fields are Strings with
-// documented allowed values (see comments). The app validates them with zod.
+// PostgreSQL (required on Vercel — never use file:./dev.db in production).
+// For local dev, point DATABASE_URL at a local/hosted Postgres too.
+// NOTE: status-like fields are kept as Strings with documented allowed values
+// (validated with zod) rather than native enums, to keep migrations simple.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

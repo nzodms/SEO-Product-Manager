@@ -28,7 +28,7 @@ File de jobs (DB-backed)  src/lib/jobs/queue.ts   ── Job / JobItem
         │
         ├── Couche IA  src/lib/ai/**       provider interchangeable (Gemini par défaut)
         ├── Sécurité   src/lib/security/** guards déterministes + chiffrement tokens
-        └── DB         Prisma (SQLite/Postgres)
+        └── DB         Prisma + PostgreSQL
         ▼
 Shopify Admin GraphQL API   +   Fournisseur IA (Gemini / Groq / OpenAI)
 ```
@@ -115,8 +115,9 @@ Schéma Prisma : `prisma/schema.prisma`.
 | `Job` | entrée de file async (type, statut, progression, compteurs, lot, runId) |
 | `JobItem` | une unité de travail (produit/collection/draft) + log + retries |
 
-SQLite en dev (enums → String validés par zod) ; passer `provider = "postgresql"`
-pour la prod.
+**PostgreSQL** (local et prod ; les statuts sont des String validés par zod
+plutôt que des enums natifs). `DATABASE_URL` ne doit jamais pointer un fichier
+SQLite — le serverless Vercel ne le supporte pas.
 
 ---
 

@@ -68,11 +68,16 @@ Vérifie :
 grep -E "GEMINI_API_KEY|APP_ENCRYPTION_KEY|DATABASE_URL" .env
 ```
 
-### 7. Initialiser la base
+### 7. Base de données PostgreSQL (requise — pas de SQLite)
+
+L'app utilise **PostgreSQL** en local comme en production. Crée une base
+(Postgres local, ou gratuit chez Neon/Supabase/Vercel Postgres) puis mets son
+URL dans `.env` (jamais `file:./dev.db`) :
 
 ```bash
-npm run db:push
-npm run db:seed   # optionnel : bases de mots-clés
+sed -i '' "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://user:pass@host:5432/seo?sslmode=require|" .env
+npm run db:push        # crée les tables dans Postgres
+npm run db:seed        # optionnel : bases de mots-clés
 ```
 
 ### 8. Lancer l'app (terminal 1)
@@ -257,7 +262,8 @@ forcé manuellement. Une **sauvegarde** est créée avant chaque écriture → r
 |---|---|
 | `npm: command not found` | installer Node via nvm (voir §2) |
 | Node trop ancien | `nvm install 20 && nvm use 20` puis `npm install` |
-| Erreur Prisma | `npm run db:generate && npm run db:push` (ou `rm -f prisma/dev.db && npm run db:push`) |
+| Erreur Prisma | vérifie que `DATABASE_URL` pointe un Postgres valide, puis `npm run db:generate && npm run db:push` |
+| `the URL must start with the protocol postgresql://` | tu as laissé `file:./dev.db` — mets une URL `postgresql://…` |
 | `GEMINI_API_KEY is not set` (worker) | renseigner la clé (§5), relancer `npm run worker` |
 | Port 3000 occupé | `lsof -ti:3000 \| xargs kill -9` ou `PORT=3001 npm run dev` |
 | Job bloqué en PENDING | le worker ne tourne pas → terminal 2 (`npm run worker`) |
@@ -277,9 +283,10 @@ En production, il n'y a **pas** de `npm run worker`. Les jobs sont traités par 
 maintenant »** dans l'interface (page Jobs). Aucun terminal requis.
 
 ### 1. Base de données
-SQLite ne convient pas au serverless. Utilise un **Postgres** (Vercel Postgres,
-Neon, Supabase…). Dans `prisma/schema.prisma`, mets `provider = "postgresql"`,
-puis `npx prisma db push` avec l'URL Postgres.
+Le schéma est déjà en **PostgreSQL** (`provider = "postgresql"`). Crée une base
+Postgres (Vercel Postgres, Neon, Supabase…), récupère son URL, puis crée les
+tables une fois : `DATABASE_URL="postgresql://…" npx prisma db push`.
+N'utilise **jamais** `file:./dev.db` en production.
 
 ### 2. Importer le repo dans Vercel
 Vercel → **New Project** → importe `nzodms/SEO-Product-Manager` → branche à déployer.
