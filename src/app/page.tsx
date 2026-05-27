@@ -19,6 +19,18 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      <section className="card">
+        <h2 className="mb-3 text-base font-semibold">Actions rapides</h2>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/import/products" className="btn-secondary">Importer produits</Link>
+          <Link href="/import/collections" className="btn-secondary">Importer collections</Link>
+          <Link href="/products" className="btn-secondary">Optimiser produits</Link>
+          <Link href="/matching" className="btn-secondary">Mapper collections</Link>
+          <Link href="/products" className="btn-secondary">Export Shopify CSV</Link>
+          <Link href="/matching" className="btn-secondary">Export Matrixify</Link>
+        </div>
+      </section>
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
         <Stat label="Boutiques" value={shops.length} />
         <Stat label="Produits en cache" value={productCount} />

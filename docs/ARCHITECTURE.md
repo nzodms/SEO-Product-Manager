@@ -140,7 +140,11 @@ pour la prod.
 | `GET /api/jobs/[id]/export?format=matrixify` | CSV Matrixify d'un job de matching |
 | `POST /api/backups/[id]/rollback` | restaurer un snapshot |
 | `GET /api/export?shopId=` | export CSV de sauvegarde |
-| `POST /api/matching` | **enqueue** un job de matching (1 item / ancien produit) |
+| `POST /api/matching` | **enqueue** un job de matching IA (1 item / ancien produit) |
+| `POST /api/migration/products/analyze` | analyser un CSV Shopify produits (produits réels vs lignes images/variantes) |
+| `POST /api/migration/collections/analyze` | analyser un export Matrixify collections |
+| `POST /api/migration/match` | matching déterministe ancien→nouveau (CSV produits) |
+| `POST /api/migration/export/matrixify` | reconstruire le Matrixify corrigé + rapport |
 
 ---
 
@@ -347,4 +351,40 @@ brouillons). Un job `APPLY` ne traite que les brouillons `APPROVED` et saute les
 **Rate limit Shopify** : pacing fixe entre items d'application + retry automatique
 sur `THROTTLED`. (Évolution : lecture de `extensions.cost.throttleStatus` pour un
 throttle adaptatif.)
+
+---
+
+## 17. Workflow import / migration / matching (fichiers, sans API Shopify)
+
+Reproduit la migration manuelle Lumio → Le Petit Luminaire. Tout est
+fichier-à-fichier (`src/lib/migration/`), déterministe et explicable.
+
+**Import produits** (`shopifyProducts.ts`, page `/import/products`) — comprend la
+structure CSV Shopify : regroupe les lignes par `Handle`, ne compte JAMAIS les
+lignes images/variantes comme des produits. Affiche : produits réels, lignes
+totales, images, variantes ; signale doublons de handles, alt sans Image Src,
+lignes sans titre (orphelines), colonnes Metafield risquées, Product Category.
+
+**Import collections** (`matrixifyCollections.ts`, page `/import/collections`) —
+lit l'export Matrixify Custom Collections (Handle, Title, Body HTML,
+`title_tag`/`description_tag`, Command, Published, Sort Order, Product: Handle/
+Position/ID). Affiche : collections, collections vides, associations, produits
+uniques ; signale handles manquants, doublons.
+
+**Matching** (`match.ts`, page `/matching`) — matching déterministe ancien→nouveau
+par : identité d'image (nom de fichier normalisé, robuste au changement de CDN),
+handle, titre (exact/proche), description (similarité), tags, vendor, type.
+Score de confiance → buckets **sûr / moyen / non matché**, filtres, correction
+manuelle du nouveau handle.
+
+**Export Matrixify corrigé** (`rebuildMatrixifyCollections`) — garde toutes les
+collections (y compris vides), remplace l'ancien `Product: Handle` par le
+nouveau, **vide les anciens `Product: ID`** (jamais d'ID entre boutiques),
+conserve les positions, **retire et SIGNALE** les associations non matchées
+(jamais de handle introuvable expédié en silence). Rapports CSV : matching,
+erreurs.
+
+Priorités : (1) import + matching + export Matrixify ; (2) optimisation SEO
+produits/collections (déjà en place) ; (3) publication directe via API (déjà en
+place via les jobs).
 ```
