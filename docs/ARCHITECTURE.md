@@ -140,6 +140,8 @@ pour la prod.
 | `GET /api/jobs?shopId=` | historique des jobs |
 | `GET /api/jobs/[id]` | statut + progression + logs par élément |
 | `POST /api/jobs/[id]/{pause\|resume\|cancel\|rollback}` | contrôle du job |
+| `GET/POST /api/jobs/tick` | tick serverless (Vercel Cron), protégé par `CRON_SECRET` |
+| `POST /api/jobs/run-now` | bouton « Traiter maintenant » (même origine) |
 | `GET /api/jobs/[id]/export?format=matrixify` | CSV Matrixify d'un job de matching |
 | `POST /api/backups/[id]/rollback` | restaurer un snapshot |
 | `GET /api/export?shopId=` | export CSV de sauvegarde |
@@ -342,6 +344,22 @@ publication**.
   matching).
 - `src/worker/index.ts` — boucle de polling : `claimNext` → `processJob`, arrêt
   gracieux sur SIGINT/SIGTERM.
+
+**Deux modes d'exécution** :
+- **Local** : `npm run worker` (polling, traite chaque job en entier).
+- **Serverless (Vercel)** : `processJobBatch` traite un **lot borné** par appel ;
+  `tickJobs` est invoqué par le **Vercel Cron** (`/api/jobs/tick`, protégé par
+  `CRON_SECRET`) et par le bouton **« Traiter maintenant »** (`/api/jobs/run-now`).
+  Un **lease** (`Job.lockedAt`) empêche deux ticks (ou worker + cron) de traiter
+  le même job. Aucun terminal requis en production.
+
+**Robustesse JSON IA** (`json.ts` + `schemas.ts`) : chaque agent valide sa sortie
+contre un schéma Zod via `safeParseAIJson` (fences retirés, `JSON.parse`,
+validation). En cas d'échec → passe de **réparation** (le modèle corrige son
+propre JSON) → sinon **régénération** de l'agent. À l'échec final, une
+`AgentError` nomme l'agent fautif (visible dans le log de l'item). Un job avec au
+moins un item en échec se termine en **`COMPLETED_WITH_ERRORS`** (jamais
+`COMPLETED`). Tests : `npm run test:ai`.
 
 **Types de jobs** : `GENERATE_PRODUCTS`, `GENERATE_COLLECTIONS`, `APPLY`, `MATCHING`.
 

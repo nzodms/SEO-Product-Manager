@@ -21,6 +21,10 @@ export interface JobQueue {
   enqueue(params: EnqueueParams): Promise<string>;
   /** Atomically claim one PENDING job and mark it RUNNING. Returns its id or null. */
   claimNext(): Promise<string | null>;
+  /** Lease-claim the next PENDING/RUNNING job for a serverless tick. */
+  claimForTick(leaseMs?: number): Promise<string | null>;
+  /** Release a tick lease so the job can be reclaimed by the next tick. */
+  releaseLock(jobId: string): Promise<void>;
   pause(jobId: string): Promise<void>;
   resume(jobId: string): Promise<void>;
   cancel(jobId: string): Promise<void>;
@@ -63,6 +67,40 @@ export class DbJobQueue implements JobQueue {
       data: { status: "RUNNING", startedAt: new Date() },
     });
     return claimed.count === 1 ? candidate.id : null;
+  }
+
+  // Lease-based claim for serverless ticking: takes the oldest job that is
+  // PENDING or already RUNNING (resumed across ticks) whose lock is null or
+  // stale, and stamps lockedAt. Used by /api/jobs/tick.
+  async claimForTick(leaseMs = 120000): Promise<string | null> {
+    const cutoff = new Date(Date.now() - leaseMs);
+    const candidate = await prisma.job.findFirst({
+      where: {
+        status: { in: ["PENDING", "RUNNING"] },
+        OR: [{ lockedAt: null }, { lockedAt: { lt: cutoff } }],
+      },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, status: true },
+    });
+    if (!candidate) return null;
+
+    const claimed = await prisma.job.updateMany({
+      where: {
+        id: candidate.id,
+        status: { in: ["PENDING", "RUNNING"] },
+        OR: [{ lockedAt: null }, { lockedAt: { lt: cutoff } }],
+      },
+      data: {
+        status: "RUNNING",
+        lockedAt: new Date(),
+        ...(candidate.status === "PENDING" ? { startedAt: new Date() } : {}),
+      },
+    });
+    return claimed.count === 1 ? candidate.id : null;
+  }
+
+  async releaseLock(jobId: string): Promise<void> {
+    await prisma.job.updateMany({ where: { id: jobId }, data: { lockedAt: null } });
   }
 
   async pause(jobId: string): Promise<void> {

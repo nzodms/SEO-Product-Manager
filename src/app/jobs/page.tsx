@@ -19,6 +19,7 @@ interface Job {
 
 const STATUS_BADGE: Record<string, string> = {
   COMPLETED: "badge-ok",
+  COMPLETED_WITH_ERRORS: "badge-risk",
   RUNNING: "badge-warn",
   PENDING: "badge-warn",
   PAUSED: "badge-warn",
@@ -30,6 +31,7 @@ export default function JobsPage() {
   const [shops, setShops] = useState<Shop[]>([]);
   const [shopId, setShopId] = useState("");
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [processing, setProcessing] = useState(false);
 
   useEffect(() => {
     fetch("/api/shops").then((r) => r.json()).then((d) => {
@@ -48,13 +50,26 @@ export default function JobsPage() {
     return () => clearInterval(t);
   }, [shopId]);
 
+  async function runNow() {
+    setProcessing(true);
+    await fetch("/api/jobs/run-now", { method: "POST" }).catch(() => {});
+    setProcessing(false);
+    fetch(`/api/jobs?shopId=${shopId}`).then((r) => r.json()).then((d) => setJobs(d.jobs ?? []));
+  }
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-lg font-semibold">Historique des jobs</h1>
         <select className="rounded border border-gray-300 px-2 py-1.5 text-sm" value={shopId} onChange={(e) => setShopId(e.target.value)}>
           {shops.map((s) => <option key={s.id} value={s.id}>{s.displayName}</option>)}
         </select>
+        <button className="btn-primary" disabled={processing} onClick={runNow}>
+          {processing ? "Traitement…" : "Traiter maintenant"}
+        </button>
+        <span className="text-xs text-gray-400">
+          En production (Vercel), les jobs sont aussi traités automatiquement par le cron.
+        </span>
       </div>
 
       <div className="card">

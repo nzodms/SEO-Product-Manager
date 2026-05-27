@@ -261,8 +261,58 @@ forcé manuellement. Une **sauvegarde** est créée avant chaque écriture → r
 | `GEMINI_API_KEY is not set` (worker) | renseigner la clé (§5), relancer `npm run worker` |
 | Port 3000 occupé | `lsof -ti:3000 \| xargs kill -9` ou `PORT=3001 npm run dev` |
 | Job bloqué en PENDING | le worker ne tourne pas → terminal 2 (`npm run worker`) |
+| Jobs bloqués en PENDING (Vercel) | clique **« Traiter maintenant »** (page Jobs) ; vérifie que le **Cron** et `CRON_SECRET` sont configurés |
 | Sync Shopify 401/403 | token invalide ou scopes manquants → **Reconnecter** (OAuth) ou recréer le token |
 | OAuth « redirect_uri is not whitelisted » | ajoute `http://localhost:3000/api/shopify/oauth/callback` dans les Allowed redirection URL(s) de l'app (§11) |
 | OAuth « Signature HMAC invalide » | Client Secret incorrect → recolle-le dans Réglages |
 | Diagnostic « Token invalide / expiré » | app désinstallée/clé changée → **Reconnecter via Shopify** |
 | « ne s'ouvre pas dans Shopify » | normal : l'app tourne sur localhost:3000, pas dans l'admin |
+
+---
+
+## F. Déploiement Vercel (pour que ton associé l'utilise sans terminal)
+
+En production, il n'y a **pas** de `npm run worker`. Les jobs sont traités par un
+**Cron Vercel** qui appelle `/api/jobs/tick`, et par le bouton **« Traiter
+maintenant »** dans l'interface (page Jobs). Aucun terminal requis.
+
+### 1. Base de données
+SQLite ne convient pas au serverless. Utilise un **Postgres** (Vercel Postgres,
+Neon, Supabase…). Dans `prisma/schema.prisma`, mets `provider = "postgresql"`,
+puis `npx prisma db push` avec l'URL Postgres.
+
+### 2. Importer le repo dans Vercel
+Vercel → **New Project** → importe `nzodms/SEO-Product-Manager` → branche à déployer.
+
+### 3. Variables d'environnement (Project Settings → Environment Variables)
+
+| Variable | Valeur |
+|---|---|
+| `DATABASE_URL` | URL Postgres |
+| `GEMINI_API_KEY` | ta clé Gemini |
+| `APP_ENCRYPTION_KEY` | `openssl rand -hex 32` |
+| `APP_URL` | l'URL publique Vercel, ex. `https://seo-product-manager.vercel.app` |
+| `CRON_SECRET` | `openssl rand -hex 32` (Vercel l'enverra automatiquement au cron) |
+
+### 4. Cron
+`vercel.json` déclare déjà le cron `*/1` sur `/api/jobs/tick`. Avec `CRON_SECRET`
+défini, Vercel l'appelle en envoyant `Authorization: Bearer <CRON_SECRET>`.
+
+> ⚠️ Le plan **Hobby** limite la fréquence des crons (≈ 1×/jour). Pour un
+> traitement réactif : passe en **Pro**, ou utilise un planificateur externe
+> (cron-job.org) qui appelle
+> `https://<APP_URL>/api/jobs/tick?secret=<CRON_SECRET>` toutes les minutes.
+> Le bouton **« Traiter maintenant »** reste disponible dans tous les cas.
+
+### 5. URL de redirection OAuth en prod
+Dans la config de l'app Shopify, ajoute aussi :
+`https://<APP_URL>/api/shopify/oauth/callback` aux Allowed redirection URL(s).
+
+### 6. Utilisation par ton associé
+Il ouvre simplement l'URL Vercel → Réglages → connecte la boutique (OAuth) →
+Produits → Synchroniser → générer → (le cron/bouton traite le job) → prévisualiser
+→ approuver → publier. Aucun terminal.
+
+> ℹ️ L'app n'a pas encore d'authentification utilisateur. En production, protège
+> l'URL (Vercel **Password Protection** / SSO, ou un middleware d'auth) pour que
+> seuls toi et ton associé puissiez y accéder.

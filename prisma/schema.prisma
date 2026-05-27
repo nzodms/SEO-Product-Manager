@@ -277,6 +277,11 @@ model Job {
   attempts    Int      @default(0)
   maxAttempts Int      @default(3)
 
+  // Lease for serverless ticking: a tick claims a job by setting lockedAt, and
+  // only jobs with a null/stale lock can be (re)claimed. Prevents overlapping
+  // cron invocations (or a local worker + cron) from double-processing.
+  lockedAt    DateTime?
+
   // Job-level options (fields to optimize, safeMode, force, ...) as JSON.
   payloadJson String   @default("{}")
   // Job output summary (matching results, apply counts, ...) as JSON.

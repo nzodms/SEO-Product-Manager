@@ -57,6 +57,13 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
     return () => clearInterval(t);
   }, [load]);
 
+  async function runNow() {
+    setMsg("Traitement en cours…");
+    await fetch("/api/jobs/run-now", { method: "POST" }).catch(() => {});
+    setMsg("");
+    load();
+  }
+
   async function action(name: "pause" | "resume" | "cancel" | "rollback") {
     setMsg("");
     const r = await fetch(`/api/jobs/${params.id}/${name}`, { method: "POST" });
@@ -80,6 +87,9 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
           <p className="text-sm text-gray-500">Statut : {job.status} · Lot : {job.batchSize}</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {active && (
+            <button className="btn-primary" onClick={runNow}>Traiter maintenant</button>
+          )}
           {active && job.status !== "PAUSED" && (
             <button className="btn-secondary" onClick={() => action("pause")}>Pause</button>
           )}
