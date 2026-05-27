@@ -124,7 +124,10 @@ pour la prod.
 
 | Méthode & route | Rôle |
 |---|---|
-| `GET/POST /api/shops` | lister / créer une boutique (token chiffré, jamais renvoyé) |
+| `GET/POST /api/shops` | lister / créer une boutique (mode TOKEN ou OAUTH ; secrets chiffrés, jamais renvoyés) |
+| `GET /api/shopify/oauth/start?shopId=` | démarrer l'OAuth (redirige vers l'autorisation Shopify) |
+| `GET /api/shopify/oauth/callback` | callback OAuth : vérifie HMAC+state, échange le code, stocke le token chiffré |
+| `POST /api/shops/[id]/test` | diagnostic connexion (Connecté / Token généré / Token invalide) |
 | `POST /api/shops/[id]/sync?resource=products\|collections` | synchroniser depuis Shopify |
 | `GET /api/products?shopId=` | produits en cache |
 | `POST /api/products/intake` | créer des produits DRAFT depuis coller/CSV (placeholder `new:…`) |
@@ -166,6 +169,13 @@ read_metaobjects, write_metaobjects / metafields  # champs SEO custom
 
 Les metafields permettent d'attacher/modifier des données SEO sur produits et
 collections quand les champs natifs ne suffisent pas.
+
+**Connexion** : deux modes. **TOKEN** (custom app admin → `shpat_…` collé) ou
+**OAUTH** (Dev Dashboard → Client ID + Secret → flux Authorization Code :
+`/oauth/start` → autorisation Shopify → `/oauth/callback` qui vérifie HMAC+state
+et échange le `code` contre un token offline). Le token OAuth n'expire pas (pas
+de refresh token) ; un token révoqué (401) est détecté par le diagnostic et
+résolu par « Reconnecter ». Client Secret et token sont chiffrés AES-256-GCM.
 
 ---
 

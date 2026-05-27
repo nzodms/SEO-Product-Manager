@@ -94,40 +94,64 @@ npm run worker
 
 ---
 
-## B. Créer la custom app Shopify & connecter la boutique
+## B. Connecter la boutique — 2 modes
 
-### 10. Créer la custom app (admin Shopify)
+L'app gère deux façons de se connecter à Shopify. **Choisis le mode qui
+correspond à ce que ton dashboard te donne.**
 
-1. Admin Shopify → **Réglages → Applications et canaux de vente → Développer des applications**.
-2. **Créer une application** → nom : `SEO Product Manager`.
-3. **Configuration → Admin API integration → Configure**.
+| Tu as… | Mode à utiliser |
+|---|---|
+| un **Client ID + Client Secret** (nouveau Dev Dashboard) | **B1 — OAuth** |
+| un token **`shpat_…`** (custom app dans l'admin) | **B2 — Token direct** |
 
-### 11. Activer les scopes Admin API
+> ℹ️ Le **Client Secret n'est pas** un token `shpat_`. Ne le colle jamais dans le
+> champ « Admin API access token ». L'app échange automatiquement les
+> credentials contre un token via OAuth.
+>
+> ℹ️ Le token OAuth obtenu est **hors-ligne et n'expire pas** (Shopify ne fournit
+> pas de refresh token). S'il devient invalide (app désinstallée), le diagnostic
+> l'affiche en **« Token invalide / expiré »** → reclique sur **Reconnecter**.
 
-Coche au minimum :
+### B1 — Mode Dev Dashboard (Client ID + Client Secret) — recommandé
+
+#### 10. Récupérer les credentials
+Dans le **Dev Dashboard** de ton app Shopify : note le **Client ID** et le
+**Client Secret**.
+
+#### 11. Déclarer l'URL de redirection (OBLIGATOIRE)
+Dans la configuration de l'app Shopify → section **URLs / Allowed redirection URL(s)**,
+ajoute **exactement** :
 
 ```
-read_products, write_products
-read_collections, write_collections
+http://localhost:3000/api/shopify/oauth/callback
 ```
 
-(Optionnels : `read_files, write_files` pour les images ; metafields si besoin.)
+(Sans ça, Shopify refusera la redirection. En prod, remplace par ton domaine
+public et définis `APP_URL` dans `.env`.)
 
-### 12. Installer et récupérer le token
+#### 12. Connecter dans l'app
+http://localhost:3000 → **Réglages** → onglet **Dev Dashboard (Client ID + Secret)** :
 
-1. **Save** → **Install app**.
-2. Onglet **API credentials** → copie l'**Admin API access token** (`shpat_…`).
-   Il ne s'affiche **qu'une seule fois**.
+- Nom affiché : `Le Petit Luminaire`
+- Domaine : `dertx1-dt.myshopify.com`
+- Client ID : (collé)
+- Client Secret : (collé — chiffré au stockage)
+- Scopes : `read_products,write_products,read_collections,write_collections`
+- **Ajouter & connecter via Shopify** → tu es redirigé vers Shopify pour
+  approuver les scopes, puis renvoyé sur l'app.
 
-### 13. Connecter la boutique dans l'app
+#### 13. Tester la connexion
+Dans **Réglages**, sur la boutique → **Tester la connexion**. Le diagnostic doit
+passer à **« Connecté ✓ »** (sinon il indique : Non connecté / Token généré /
+Token invalide + l'erreur).
 
-Dans http://localhost:3000 → **Réglages → Ajouter une boutique** :
+### B2 — Mode token direct (`shpat_…`), si tu l'as
 
-- Nom affiché : ex. `Le Petit Luminaire`
-- Domaine : `ta-boutique.myshopify.com`
-- Admin API access token : colle le `shpat_…`
-- Préréglage de règles : choisis (Lumio / Le Petit Luminaire / Bebilo)
-- **Ajouter** (le token est chiffré AES-256-GCM avant stockage, jamais renvoyé au navigateur).
+1. Admin Shopify → **Réglages → Applications → Développer des applications** →
+   créer l'app → scopes `read_products, write_products, read_collections,
+   write_collections` → **Install** → copie l'**Admin API access token** (`shpat_…`).
+2. App → **Réglages** → onglet **Token direct (shpat_)** → domaine + token → **Ajouter**.
+3. **Tester la connexion**.
 
 ---
 
@@ -237,5 +261,8 @@ forcé manuellement. Une **sauvegarde** est créée avant chaque écriture → r
 | `GEMINI_API_KEY is not set` (worker) | renseigner la clé (§5), relancer `npm run worker` |
 | Port 3000 occupé | `lsof -ti:3000 \| xargs kill -9` ou `PORT=3001 npm run dev` |
 | Job bloqué en PENDING | le worker ne tourne pas → terminal 2 (`npm run worker`) |
-| Sync Shopify 401/403 | token invalide ou scopes manquants → recréer la custom app (§10-12) |
+| Sync Shopify 401/403 | token invalide ou scopes manquants → **Reconnecter** (OAuth) ou recréer le token |
+| OAuth « redirect_uri is not whitelisted » | ajoute `http://localhost:3000/api/shopify/oauth/callback` dans les Allowed redirection URL(s) de l'app (§11) |
+| OAuth « Signature HMAC invalide » | Client Secret incorrect → recolle-le dans Réglages |
+| Diagnostic « Token invalide / expiré » | app désinstallée/clé changée → **Reconnecter via Shopify** |
 | « ne s'ouvre pas dans Shopify » | normal : l'app tourne sur localhost:3000, pas dans l'admin |

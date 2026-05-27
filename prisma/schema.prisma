@@ -19,8 +19,23 @@ model Shop {
   id          String   @id @default(cuid())
   domain      String   @unique // e.g. "lumio.myshopify.com"
   displayName String
+  // Connection mode: TOKEN (paste a shpat_ token) | OAUTH (Client ID + Secret).
+  authMode    String   @default("TOKEN")
   // Admin API access token, encrypted at rest (never returned to the client).
+  // For OAUTH shops this is filled after the authorization-code exchange.
   accessTokenEnc String?
+  // OAuth app credentials (Dev Dashboard). Secret stored encrypted, never returned.
+  clientId       String?
+  clientSecretEnc String?
+  // Requested scopes (comma-separated) for the OAuth authorize step.
+  scopes         String?
+  // Transient CSRF nonce for the in-flight OAuth round-trip.
+  oauthState     String?
+  tokenObtainedAt DateTime?
+  // Diagnostic: NOT_CONNECTED | TOKEN_PRESENT | CONNECTED | TOKEN_INVALID
+  connectionStatus String  @default("NOT_CONNECTED")
+  connectionCheckedAt DateTime?
+  connectionError String?
   apiVersion  String   @default("2025-01")
   active      Boolean  @default(true)
 
