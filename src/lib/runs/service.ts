@@ -6,11 +6,16 @@ import {
   type PipelineOptions,
 } from "@/lib/agents/productPipeline";
 import { runCollectionPipeline, type CollectionInput } from "@/lib/agents/collectionPipeline";
-import { applyProductUpdate, applyCollectionUpdate } from "@/lib/shopify/service";
+import {
+  applyProductUpdate,
+  applyCollectionUpdate,
+  createProductInShopify,
+} from "@/lib/shopify/service";
 import type { ProductImage } from "@/lib/security/guards";
 
 export type RunMode =
   | "UPDATE_PRODUCTS"
+  | "OPTIMIZE_SEO"
   | "CREATE_PRODUCTS"
   | "OPTIMIZE_COLLECTIONS"
   | "CSV_FIX"
@@ -52,6 +57,16 @@ export interface ProductGenContext {
   fields: PipelineOptions["fields"];
   safeMode: boolean;
   existingTitles: string[];
+  existingBrandedNames: string[];
+}
+
+// A branded name is the segment after the last " | " in a product title
+// (branded shops only). Non-branded titles contribute nothing.
+function extractBrandedName(title: string): string | null {
+  const parts = title.split(" | ");
+  if (parts.length < 2) return null;
+  const last = parts[parts.length - 1].trim();
+  return last || null;
 }
 
 export async function buildProductGenContext(
@@ -64,7 +79,18 @@ export async function buildProductGenContext(
   const titles = (
     await prisma.product.findMany({ where: { shopId }, select: { title: true } })
   ).map((p) => p.title);
-  return { shopId, runId, rules: parseShopRules(shop.rulesJson), fields, safeMode, existingTitles: titles };
+  const branded = Array.from(
+    new Set(titles.map(extractBrandedName).filter((b): b is string => Boolean(b)))
+  );
+  return {
+    shopId,
+    runId,
+    rules: parseShopRules(shop.rulesJson),
+    fields,
+    safeMode,
+    existingTitles: titles,
+    existingBrandedNames: branded,
+  };
 }
 
 export async function buildShopRules(shopId: string): Promise<ShopRules> {
@@ -93,6 +119,7 @@ export async function generateProductDraft(
     safeMode: ctx.safeMode,
     fields: ctx.fields,
     existingTitles: ctx.existingTitles.filter((t) => t !== product.title),
+    existingBrandedNames: ctx.existingBrandedNames,
   };
   const result = await runProductPipeline(input, ctx.rules, pipelineOpts, ctx.runId);
   await prisma.optimizationDraft.create({
@@ -154,17 +181,38 @@ export async function applyDraftById(
   const before = JSON.parse(draft.beforeJson);
 
   if (draft.product) {
-    await prisma.backup.create({
-      data: {
-        shopId: opts.shopId,
-        resource: "PRODUCT",
-        shopifyId: draft.product.shopifyId,
-        snapshotJson: JSON.stringify(before),
-        runId: opts.runId ?? null,
-      },
-    });
-    await applyProductUpdate(opts.shopId, draft.product.shopifyId, after);
-    await recordChanges(opts.shopId, "PRODUCT", draft.product.shopifyId, before, after, opts.runId);
+    // Intake products carry a placeholder id ("new:…"); they are CREATED in
+    // Shopify (as DRAFT, never auto-published) rather than updated.
+    if (draft.product.shopifyId.startsWith("new:")) {
+      const newGid = await createProductInShopify(opts.shopId, {
+        title: after.title ?? draft.product.title,
+        bodyHtml: after.bodyHtml,
+        handle: after.handle ?? draft.product.handle,
+        tags: after.tags,
+        vendor: after.vendor ?? draft.product.vendor ?? undefined,
+        productType: draft.product.productType ?? undefined,
+        seoTitle: after.seoTitle,
+        seoDescription: after.seoDescription,
+      });
+      // Replace the placeholder id with the real Shopify gid.
+      await prisma.product.update({
+        where: { id: draft.product.id },
+        data: { shopifyId: newGid, status: "DRAFT" },
+      });
+      await recordChanges(opts.shopId, "PRODUCT", newGid, {}, after, opts.runId);
+    } else {
+      await prisma.backup.create({
+        data: {
+          shopId: opts.shopId,
+          resource: "PRODUCT",
+          shopifyId: draft.product.shopifyId,
+          snapshotJson: JSON.stringify(before),
+          runId: opts.runId ?? null,
+        },
+      });
+      await applyProductUpdate(opts.shopId, draft.product.shopifyId, after);
+      await recordChanges(opts.shopId, "PRODUCT", draft.product.shopifyId, before, after, opts.runId);
+    }
   } else if (draft.collection) {
     await prisma.backup.create({
       data: {

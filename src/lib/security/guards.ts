@@ -182,3 +182,61 @@ export function verdictFromIssues(issues: GuardIssue[]): "OK" | "REVIEW" | "RISK
   if (issues.some((i) => i.severity === "warn")) return "REVIEW";
   return "OK";
 }
+
+// Normalized similarity (0..1) between two strings via Levenshtein distance.
+export function similarityRatio(a: string, b: string): number {
+  const s1 = a.trim().toLowerCase();
+  const s2 = b.trim().toLowerCase();
+  if (!s1 && !s2) return 1;
+  const dist = levenshtein(s1, s2);
+  const maxLen = Math.max(s1.length, s2.length) || 1;
+  return 1 - dist / maxLen;
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let curr = new Array<number>(n + 1);
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+// Branded-name checks: never duplicate, never too similar to an existing one.
+export function checkBrandedName(name: string | null | undefined, existing: string[]): GuardIssue[] {
+  if (!name) return [];
+  const issues: GuardIssue[] = [];
+  const norm = name.trim().toLowerCase();
+  for (const ex of existing) {
+    const exNorm = ex.trim().toLowerCase();
+    if (!exNorm || exNorm === norm) {
+      if (exNorm === norm) {
+        issues.push({
+          severity: "error",
+          code: "BRANDED_DUPLICATE",
+          field: "title",
+          message: `Nom brandé déjà utilisé : "${name}".`,
+        });
+      }
+      continue;
+    }
+    if (similarityRatio(norm, exNorm) >= 0.8) {
+      issues.push({
+        severity: "warn",
+        code: "BRANDED_SIMILAR",
+        field: "title",
+        message: `Nom brandé trop proche de "${ex}".`,
+      });
+    }
+  }
+  return issues;
+}

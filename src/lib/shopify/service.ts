@@ -6,6 +6,7 @@ import {
   PRODUCT_UPDATE_MUTATION,
   PRODUCT_UPDATE_MEDIA_MUTATION,
   COLLECTION_UPDATE_MUTATION,
+  PRODUCT_CREATE_MUTATION,
 } from "./mutations";
 import type { ProductImage } from "@/lib/security/guards";
 
@@ -209,6 +210,42 @@ export async function applyProductUpdate(
       assertNoUserErrors(res.productUpdateMedia.mediaUserErrors);
     }
   }
+}
+
+// Creates a new product. Defaults to DRAFT status so nothing goes live on the
+// storefront without an explicit publish — anti-casse for intake products.
+export async function createProductInShopify(
+  shopId: string,
+  fields: {
+    title: string;
+    bodyHtml?: string;
+    handle?: string;
+    tags?: string[];
+    vendor?: string;
+    productType?: string;
+    seoTitle?: string;
+    seoDescription?: string;
+  }
+): Promise<string> {
+  const client = await clientForShop(shopId);
+  const input: Record<string, unknown> = { title: fields.title, status: "DRAFT" };
+  if (fields.bodyHtml !== undefined) input.descriptionHtml = fields.bodyHtml;
+  if (fields.handle !== undefined) input.handle = fields.handle;
+  if (fields.tags !== undefined) input.tags = fields.tags;
+  if (fields.vendor !== undefined) input.vendor = fields.vendor;
+  if (fields.productType !== undefined) input.productType = fields.productType;
+  if (fields.seoTitle !== undefined || fields.seoDescription !== undefined) {
+    input.seo = {
+      ...(fields.seoTitle !== undefined ? { title: fields.seoTitle } : {}),
+      ...(fields.seoDescription !== undefined ? { description: fields.seoDescription } : {}),
+    };
+  }
+  const res = await client.request<{
+    productCreate: { product: { id: string } | null; userErrors: UserError[] };
+  }>(PRODUCT_CREATE_MUTATION, { input });
+  assertNoUserErrors(res.productCreate.userErrors);
+  if (!res.productCreate.product) throw new Error("productCreate returned no product.");
+  return res.productCreate.product.id;
 }
 
 export async function applyCollectionUpdate(

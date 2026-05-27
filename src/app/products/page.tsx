@@ -23,7 +23,8 @@ const FIELD_KEYS = [
   ["tags", "Tags"],
   ["altText", "Alt text images"],
   ["internalLinking", "Maillage interne"],
-  ["handle", "Handle (création uniquement)"],
+  ["vendor", "Fournisseur (= marque)"],
+  ["handle", "Handle (non sécurisé uniquement)"],
 ] as const;
 
 export default function ProductsPage() {
@@ -32,7 +33,7 @@ export default function ProductsPage() {
   const [shopId, setShopId] = useState("");
   const [products, setProducts] = useState<Product[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [mode, setMode] = useState<"UPDATE_PRODUCTS" | "CREATE_PRODUCTS">("UPDATE_PRODUCTS");
+  const [mode, setMode] = useState<"UPDATE_PRODUCTS" | "OPTIMIZE_SEO" | "CREATE_PRODUCTS">("UPDATE_PRODUCTS");
   const [batchSize, setBatchSize] = useState<10 | 25 | 50>(25);
   const [fields, setFields] = useState<Record<string, boolean>>({
     title: true,
@@ -41,6 +42,7 @@ export default function ProductsPage() {
     tags: true,
     altText: true,
     internalLinking: true,
+    vendor: false,
     handle: false,
   });
   const [busy, setBusy] = useState(false);
@@ -81,6 +83,13 @@ export default function ProductsPage() {
     const next = new Set(selected);
     next.has(id) ? next.delete(id) : next.add(id);
     setSelected(next);
+  }
+
+  function selectFirst(n: number) {
+    setSelected(new Set(products.slice(0, n).map((p) => p.id)));
+  }
+  function selectAll() {
+    setSelected(new Set(products.map((p) => p.id)));
   }
 
   async function launch() {
@@ -135,8 +144,10 @@ export default function ProductsPage() {
             onChange={(e) => setMode(e.target.value as typeof mode)}
           >
             <option value="UPDATE_PRODUCTS">Mise à jour sécurisée (handle &amp; images verrouillés)</option>
+            <option value="OPTIMIZE_SEO">Optimisation SEO (handle modifiable)</option>
             <option value="CREATE_PRODUCTS">Création / refonte produits</option>
           </select>
+          <a className="btn-secondary" href="/products/new">+ Ajouter des produits</a>
           <label className="text-sm font-medium">Lot :</label>
           <select
             className="rounded border border-gray-300 px-2 py-1.5 text-sm"
@@ -174,6 +185,14 @@ export default function ProductsPage() {
       </div>
 
       <div className="card">
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-gray-500">Sélection rapide :</span>
+          <button className="btn-secondary" onClick={() => selectFirst(5)}>5</button>
+          <button className="btn-secondary" onClick={() => selectFirst(50)}>50</button>
+          <button className="btn-secondary" onClick={selectAll}>Tout</button>
+          <button className="btn-secondary" onClick={() => setSelected(new Set())}>Aucun</button>
+          <span className="text-gray-400">{selected.size} / {products.length} sélectionné(s)</span>
+        </div>
         <table className="w-full text-sm">
           <thead className="text-left text-gray-500">
             <tr>

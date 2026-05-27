@@ -127,6 +127,7 @@ pour la prod.
 | `GET/POST /api/shops` | lister / créer une boutique (token chiffré, jamais renvoyé) |
 | `POST /api/shops/[id]/sync?resource=products\|collections` | synchroniser depuis Shopify |
 | `GET /api/products?shopId=` | produits en cache |
+| `POST /api/products/intake` | créer des produits DRAFT depuis coller/CSV (placeholder `new:…`) |
 | `GET /api/collections?shopId=` | collections en cache |
 | `POST /api/runs` | créer un run + **enqueue** un job de génération (async) |
 | `GET /api/runs/[id]` | run + brouillons (diff) |
@@ -251,6 +252,17 @@ second avis) :
 Côté flux : on ne crée jamais de produits en mode mise à jour ; on travaille par
 *handle* pour les correspondances ; **backup systématique avant écriture** ;
 collections jamais supprimées.
+
+**Noms brandés** : politique par boutique (`useBrandedNames`) — Lumio sans nom
+brandé, Le Petit Luminaire avec (`Titre SEO | Nom Brandé`), Bebilo naturel. Les
+noms brandés existants sont collectés depuis les titres et réinjectés à l'agent
+titre ; un nom brandé dupliqué (`BRANDED_DUPLICATE`) ou trop proche
+(`BRANDED_SIMILAR`, similarité Levenshtein ≥ 0,8) est signalé.
+
+**Modes produit** : `UPDATE_PRODUCTS` (sécurisé, handle/images verrouillés),
+`OPTIMIZE_SEO` (mise à jour avec handle modifiable), `CREATE_PRODUCTS` (création).
+Les produits issus de l'intake portent un id `new:…` et sont **créés** dans
+Shopify (statut DRAFT) à l'application, jamais mis à jour.
 
 ---
 

@@ -4,6 +4,7 @@ import { getNicheKeywords } from "@/lib/config/niches";
 import {
   runGuards,
   verdictFromIssues,
+  checkBrandedName,
   type DraftFields,
   type GuardIssue,
   type ProductImage,
@@ -86,8 +87,10 @@ export interface PipelineOptions {
     tags: boolean;
     altText: boolean;
     internalLinking: boolean;
+    vendor: boolean;
   };
   existingTitles?: string[];
+  existingBrandedNames?: string[];
   oldDomains?: string[];
 }
 
@@ -140,6 +143,7 @@ export async function runProductPipeline(
   }
 
   const after: DraftFields = {};
+  let brandedName: string | null = null;
 
   // 4. Title.
   if (opts.fields.title) {
@@ -155,11 +159,14 @@ export async function runProductPipeline(
           useBrandedNames: rules.useBrandedNames,
           editorialTone: rules.editorialTone,
         },
+        useBrandedNames: rules.useBrandedNames,
         existingTitles: opts.existingTitles ?? [],
+        existingBrandedNames: opts.existingBrandedNames ?? [],
         currentTitle: product.title,
       },
     });
     after.title = t.title;
+    brandedName = rules.useBrandedNames ? t.brandedName : null;
   }
 
   const effectiveTitle = after.title ?? product.title;
@@ -207,6 +214,11 @@ export async function runProductPipeline(
       userPayload: { analysis, keywords, niche: rules.niche, currentTags: product.tags },
     });
     after.tags = dedupeTags(tg.tags);
+  }
+
+  // 7b. Vendor / fournisseur — set to the store brand to clean supplier junk.
+  if (opts.fields.vendor && rules.brandName) {
+    after.vendor = rules.brandName;
   }
 
   // 8. Description (consumes the internal link if present).
@@ -260,10 +272,14 @@ export async function runProductPipeline(
     safeMode: opts.safeMode,
     metaSuffix: rules.metaSuffix,
     storeDomain: rules.storeUrl,
-    oldDomains: opts.oldDomains,
+    oldDomains: opts.oldDomains ?? rules.oldDomains,
     existingTitles: opts.existingTitles,
+    existingBrandedNames: opts.existingBrandedNames,
   };
-  const guardIssues = runGuards(before, after, ctx);
+  const guardIssues = [
+    ...runGuards(before, after, ctx),
+    ...checkBrandedName(brandedName, opts.existingBrandedNames ?? []),
+  ];
 
   // 11. QC agent (second opinion). Non-fatal if it errors.
   let qcIssues: GuardIssue[] = [];

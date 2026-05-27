@@ -12,12 +12,14 @@ const FieldsSchema = z.object({
   tags: z.boolean().default(false),
   altText: z.boolean().default(false),
   internalLinking: z.boolean().default(false),
+  vendor: z.boolean().default(false),
 });
 
 const CreateRunSchema = z.object({
   shopId: z.string(),
   mode: z.enum([
     "UPDATE_PRODUCTS",
+    "OPTIMIZE_SEO",
     "CREATE_PRODUCTS",
     "OPTIMIZE_COLLECTIONS",
     "CSV_FIX",
