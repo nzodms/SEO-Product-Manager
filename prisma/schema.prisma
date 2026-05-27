@@ -1,0 +1,236 @@
+// SEO Product Manager — data model.
+// Uses SQLite for local dev; switch `provider` to "postgresql" for prod.
+// NOTE: SQLite has no native enums, so status-like fields are Strings with
+// documented allowed values (see comments). The app validates them with zod.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Shops — one row per managed Shopify store, with per-shop editorial rules.
+// ---------------------------------------------------------------------------
+model Shop {
+  id          String   @id @default(cuid())
+  domain      String   @unique // e.g. "lumio.myshopify.com"
+  displayName String
+  // Admin API access token, encrypted at rest (never returned to the client).
+  accessTokenEnc String?
+  apiVersion  String   @default("2025-01")
+  active      Boolean  @default(true)
+
+  // Editorial rules serialized as JSON (string). See lib/config/shops.ts for shape:
+  // { brandName, seoTitleSuffix, metaSuffix, titleRules, handleRules,
+  //   niche, collectionUrls: {lustres, plafonniers, ...}, storeUrl }
+  rulesJson   String   @default("{}")
+
+  products    Product[]
+  collections Collection[]
+  runs        OptimizationRun[]
+  backups     Backup[]
+  changeLogs  ChangeLog[]
+  keywordSets KeywordSet[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Product — cached snapshot of a Shopify product (source of truth = Shopify).
+// ---------------------------------------------------------------------------
+model Product {
+  id            String   @id @default(cuid())
+  shopId        String
+  shop          Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  shopifyId     String   // gid://shopify/Product/123
+  handle        String
+  title         String
+  bodyHtml      String?
+  vendor        String?
+  productType   String?
+  tags          String?  // comma-joined
+  seoTitle      String?
+  seoDescription String?
+  // JSON array of { shopifyId, src, altText, position } — images.
+  imagesJson    String   @default("[]")
+  status        String   @default("ACTIVE") // ACTIVE | DRAFT | ARCHIVED
+
+  drafts        OptimizationDraft[]
+
+  syncedAt      DateTime @default(now())
+
+  @@unique([shopId, shopifyId])
+  @@index([shopId, handle])
+}
+
+// ---------------------------------------------------------------------------
+// Collection — cached snapshot of a Shopify collection.
+// ---------------------------------------------------------------------------
+model Collection {
+  id            String   @id @default(cuid())
+  shopId        String
+  shop          Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  shopifyId     String
+  handle        String
+  title         String
+  bodyHtml      String?
+  seoTitle      String?
+  seoDescription String?
+
+  drafts        OptimizationDraft[]
+
+  syncedAt      DateTime @default(now())
+
+  @@unique([shopId, shopifyId])
+  @@index([shopId, handle])
+}
+
+// ---------------------------------------------------------------------------
+// OptimizationRun — a batch job over selected products/collections.
+// ---------------------------------------------------------------------------
+model OptimizationRun {
+  id          String   @id @default(cuid())
+  shopId      String
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  // mode: UPDATE_PRODUCTS | CREATE_PRODUCTS | OPTIMIZE_COLLECTIONS |
+  //       CSV_FIX | MATCH_COLLECTIONS | SEO_AUDIT
+  mode        String
+  // resource: PRODUCT | COLLECTION
+  resource    String   @default("PRODUCT")
+  // status: PENDING | GENERATING | READY_FOR_REVIEW | APPLYING | APPLIED | FAILED | CANCELLED
+  status      String   @default("PENDING")
+
+  // Run-level options serialized as JSON (which fields to touch, safe mode, etc.)
+  optionsJson String   @default("{}")
+
+  drafts      OptimizationDraft[]
+  agentLogs   AgentLog[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// OptimizationDraft — proposed changes for ONE product or collection.
+// Holds before/after values per field + QC verdict, awaiting human approval.
+// ---------------------------------------------------------------------------
+model OptimizationDraft {
+  id           String   @id @default(cuid())
+  runId        String
+  run          OptimizationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  productId    String?
+  product      Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+  collectionId String?
+  collection   Collection? @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  // before/after field maps serialized as JSON:
+  // { title, bodyHtml, seoTitle, seoDescription, handle, tags, vendor, images }
+  beforeJson   String   @default("{}")
+  afterJson    String   @default("{}")
+
+  // QC: OK | REVIEW | RISK  (from the Quality Control + Security agents)
+  qcStatus     String   @default("REVIEW")
+  // JSON array of { code, severity, message, field }
+  issuesJson   String   @default("[]")
+
+  // approval: PENDING | APPROVED | REJECTED | APPLIED | FAILED
+  approval     String   @default("PENDING")
+  appliedAt    DateTime?
+  errorMessage String?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([runId, approval])
+}
+
+// ---------------------------------------------------------------------------
+// AgentLog — per-agent execution record (token usage, prompt, output, timing).
+// Never stores secrets. Useful for debugging the multi-agent pipeline.
+// ---------------------------------------------------------------------------
+model AgentLog {
+  id          String   @id @default(cuid())
+  runId       String?
+  run         OptimizationRun? @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  agent       String   // e.g. "product_analysis", "meta_seo"
+  resourceRef String?  // product/collection shopifyId for traceability
+  model       String
+  status      String   @default("OK") // OK | ERROR
+  latencyMs   Int      @default(0)
+  inputChars  Int      @default(0)
+  outputChars Int      @default(0)
+  errorMessage String?
+
+  createdAt   DateTime @default(now())
+
+  @@index([runId, agent])
+}
+
+// ---------------------------------------------------------------------------
+// Backup — full pre-change snapshot (for rollback + CSV export).
+// ---------------------------------------------------------------------------
+model Backup {
+  id          String   @id @default(cuid())
+  shopId      String
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  resource    String   // PRODUCT | COLLECTION
+  shopifyId   String
+  // Complete field snapshot serialized as JSON.
+  snapshotJson String
+  // Linked to the draft/run that triggered the change (nullable).
+  runId       String?
+
+  createdAt   DateTime @default(now())
+
+  @@index([shopId, resource, shopifyId])
+}
+
+// ---------------------------------------------------------------------------
+// ChangeLog — append-only audit trail of every field actually pushed to Shopify.
+// ---------------------------------------------------------------------------
+model ChangeLog {
+  id          String   @id @default(cuid())
+  shopId      String
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  resource    String   // PRODUCT | COLLECTION
+  shopifyId   String
+  field       String
+  oldValue    String?
+  newValue    String?
+  runId       String?
+
+  createdAt   DateTime @default(now())
+
+  @@index([shopId, resource, shopifyId])
+}
+
+// ---------------------------------------------------------------------------
+// KeywordSet — niche keyword bases (generated or curated).
+// ---------------------------------------------------------------------------
+model KeywordSet {
+  id          String   @id @default(cuid())
+  shopId      String?
+  shop        Shop?    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  niche       String   // "luminaire", "bebe", ...
+  // JSON: { primary[], secondary[], longTail[], transactional[], questions[],
+  //         technical[], synonyms[], byMaterial[], byUsage[], byRoom[], byStyle[] }
+  dataJson    String   @default("{}")
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([niche])
+}
