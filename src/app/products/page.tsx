@@ -33,6 +33,7 @@ export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<"UPDATE_PRODUCTS" | "CREATE_PRODUCTS">("UPDATE_PRODUCTS");
+  const [batchSize, setBatchSize] = useState<10 | 25 | 50>(25);
   const [fields, setFields] = useState<Record<string, boolean>>({
     title: true,
     description: true,
@@ -84,7 +85,7 @@ export default function ProductsPage() {
 
   async function launch() {
     setBusy(true);
-    setMsg("Génération multi-agents en cours…");
+    setMsg("Mise en file d'attente…");
     const effectiveFields = { ...fields, handle: safeMode ? false : fields.handle };
     const r = await fetch("/api/runs", {
       method: "POST",
@@ -94,11 +95,13 @@ export default function ProductsPage() {
         mode,
         resourceIds: [...selected],
         fields: effectiveFields,
+        batchSize,
       }),
     });
     const d = await r.json();
     setBusy(false);
-    if (r.ok) router.push(`/runs/${d.runId}`);
+    // Generation runs async in the worker; follow progress on the job page.
+    if (r.ok) router.push(`/jobs/${d.jobId}`);
     else setMsg(`Erreur : ${JSON.stringify(d.error)}`);
   }
 
@@ -133,6 +136,16 @@ export default function ProductsPage() {
           >
             <option value="UPDATE_PRODUCTS">Mise à jour sécurisée (handle &amp; images verrouillés)</option>
             <option value="CREATE_PRODUCTS">Création / refonte produits</option>
+          </select>
+          <label className="text-sm font-medium">Lot :</label>
+          <select
+            className="rounded border border-gray-300 px-2 py-1.5 text-sm"
+            value={batchSize}
+            onChange={(e) => setBatchSize(Number(e.target.value) as 10 | 25 | 50)}
+          >
+            <option value={10}>10</option>
+            <option value={25}>25</option>
+            <option value={50}>50</option>
           </select>
         </div>
         <div className="flex flex-wrap gap-3">

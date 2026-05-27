@@ -1,15 +1,12 @@
 import { prisma } from "@/lib/db";
-import { parseShopRules } from "@/lib/config/shops";
+import { parseShopRules, type ShopRules } from "@/lib/config/shops";
 import {
   runProductPipeline,
   type ProductInput,
   type PipelineOptions,
 } from "@/lib/agents/productPipeline";
 import { runCollectionPipeline, type CollectionInput } from "@/lib/agents/collectionPipeline";
-import {
-  applyProductUpdate,
-  applyCollectionUpdate,
-} from "@/lib/shopify/service";
+import { applyProductUpdate, applyCollectionUpdate } from "@/lib/shopify/service";
 import type { ProductImage } from "@/lib/security/guards";
 
 export type RunMode =
@@ -23,17 +20,14 @@ export type RunMode =
 export interface CreateRunOptions {
   shopId: string;
   mode: RunMode;
-  resourceIds: string[]; // Product.id or Collection.id (local ids)
   fields: PipelineOptions["fields"];
 }
 
-// Generate drafts for a batch. UPDATE_PRODUCTS => safeMode true (locks handle/images).
-export async function createRun(opts: CreateRunOptions): Promise<string> {
-  const shop = await prisma.shop.findUniqueOrThrow({ where: { id: opts.shopId } });
-  const rules = parseShopRules(shop.rulesJson);
+// Creates the run shell only. Drafts are produced asynchronously by job items
+// so the request never blocks — the AI never publishes here, it only proposes.
+export async function createGenerationRun(opts: CreateRunOptions): Promise<{ runId: string; resource: "PRODUCT" | "COLLECTION"; safeMode: boolean }> {
   const resource = opts.mode === "OPTIMIZE_COLLECTIONS" ? "COLLECTION" : "PRODUCT";
   const safeMode = opts.mode === "UPDATE_PRODUCTS";
-
   const run = await prisma.optimizationRun.create({
     data: {
       shopId: opts.shopId,
@@ -43,158 +37,153 @@ export async function createRun(opts: CreateRunOptions): Promise<string> {
       optionsJson: JSON.stringify({ ...opts.fields, safeMode }),
     },
   });
-
-  try {
-    if (resource === "PRODUCT") {
-      // Existing titles in this shop for duplicate detection.
-      const titles = (
-        await prisma.product.findMany({
-          where: { shopId: opts.shopId },
-          select: { title: true },
-        })
-      ).map((p) => p.title);
-
-      for (const pid of opts.resourceIds) {
-        const product = await prisma.product.findUniqueOrThrow({ where: { id: pid } });
-        const input: ProductInput = {
-          shopifyId: product.shopifyId,
-          handle: product.handle,
-          title: product.title,
-          bodyHtml: product.bodyHtml,
-          vendor: product.vendor,
-          productType: product.productType,
-          tags: product.tags ? product.tags.split(",").map((t) => t.trim()).filter(Boolean) : [],
-          seoTitle: product.seoTitle,
-          seoDescription: product.seoDescription,
-          images: JSON.parse(product.imagesJson) as ProductImage[],
-        };
-        const pipelineOpts: PipelineOptions = {
-          safeMode,
-          fields: opts.fields,
-          existingTitles: titles.filter((t) => t !== product.title),
-        };
-        const result = await runProductPipeline(input, rules, pipelineOpts, run.id);
-        await prisma.optimizationDraft.create({
-          data: {
-            runId: run.id,
-            productId: product.id,
-            beforeJson: JSON.stringify(result.before),
-            afterJson: JSON.stringify(result.after),
-            qcStatus: result.qcStatus,
-            issuesJson: JSON.stringify(result.issues),
-          },
-        });
-      }
-    } else {
-      for (const cid of opts.resourceIds) {
-        const col = await prisma.collection.findUniqueOrThrow({ where: { id: cid } });
-        const input: CollectionInput = {
-          shopifyId: col.shopifyId,
-          handle: col.handle,
-          title: col.title,
-          bodyHtml: col.bodyHtml,
-          seoTitle: col.seoTitle,
-          seoDescription: col.seoDescription,
-        };
-        const result = await runCollectionPipeline(input, rules, run.id);
-        await prisma.optimizationDraft.create({
-          data: {
-            runId: run.id,
-            collectionId: col.id,
-            beforeJson: JSON.stringify(result.before),
-            afterJson: JSON.stringify(result.after),
-            qcStatus: result.qcStatus,
-            issuesJson: JSON.stringify(result.issues),
-          },
-        });
-      }
-    }
-
-    await prisma.optimizationRun.update({
-      where: { id: run.id },
-      data: { status: "READY_FOR_REVIEW" },
-    });
-  } catch (err) {
-    await prisma.optimizationRun.update({
-      where: { id: run.id },
-      data: { status: "FAILED" },
-    });
-    throw err;
-  }
-
-  return run.id;
+  return { runId: run.id, resource, safeMode };
 }
 
-// Apply approved drafts to Shopify. Backs up each resource first, then writes,
-// then records a changelog entry per field. RISK drafts are skipped unless forced.
-export async function applyRun(runId: string, force = false): Promise<{ applied: number; skipped: number; failed: number }> {
-  const run = await prisma.optimizationRun.findUniqueOrThrow({ where: { id: runId } });
-  const drafts = await prisma.optimizationDraft.findMany({
-    where: { runId, approval: "APPROVED" },
+export async function setRunStatus(runId: string, status: string): Promise<void> {
+  await prisma.optimizationRun.update({ where: { id: runId }, data: { status } });
+}
+
+// ---- Per-item generation (called by job handlers, one resource at a time) --
+export interface ProductGenContext {
+  shopId: string;
+  runId: string;
+  rules: ShopRules;
+  fields: PipelineOptions["fields"];
+  safeMode: boolean;
+  existingTitles: string[];
+}
+
+export async function buildProductGenContext(
+  shopId: string,
+  runId: string,
+  fields: PipelineOptions["fields"],
+  safeMode: boolean
+): Promise<ProductGenContext> {
+  const shop = await prisma.shop.findUniqueOrThrow({ where: { id: shopId } });
+  const titles = (
+    await prisma.product.findMany({ where: { shopId }, select: { title: true } })
+  ).map((p) => p.title);
+  return { shopId, runId, rules: parseShopRules(shop.rulesJson), fields, safeMode, existingTitles: titles };
+}
+
+export async function buildShopRules(shopId: string): Promise<ShopRules> {
+  const shop = await prisma.shop.findUniqueOrThrow({ where: { id: shopId } });
+  return parseShopRules(shop.rulesJson);
+}
+
+export async function generateProductDraft(
+  ctx: ProductGenContext,
+  productLocalId: string
+): Promise<{ qcStatus: string; issues: number }> {
+  const product = await prisma.product.findUniqueOrThrow({ where: { id: productLocalId } });
+  const input: ProductInput = {
+    shopifyId: product.shopifyId,
+    handle: product.handle,
+    title: product.title,
+    bodyHtml: product.bodyHtml,
+    vendor: product.vendor,
+    productType: product.productType,
+    tags: product.tags ? product.tags.split(",").map((t) => t.trim()).filter(Boolean) : [],
+    seoTitle: product.seoTitle,
+    seoDescription: product.seoDescription,
+    images: JSON.parse(product.imagesJson) as ProductImage[],
+  };
+  const pipelineOpts: PipelineOptions = {
+    safeMode: ctx.safeMode,
+    fields: ctx.fields,
+    existingTitles: ctx.existingTitles.filter((t) => t !== product.title),
+  };
+  const result = await runProductPipeline(input, ctx.rules, pipelineOpts, ctx.runId);
+  await prisma.optimizationDraft.create({
+    data: {
+      runId: ctx.runId,
+      productId: product.id,
+      beforeJson: JSON.stringify(result.before),
+      afterJson: JSON.stringify(result.after),
+      qcStatus: result.qcStatus,
+      issuesJson: JSON.stringify(result.issues),
+    },
+  });
+  return { qcStatus: result.qcStatus, issues: result.issues.length };
+}
+
+export async function generateCollectionDraft(
+  shopId: string,
+  runId: string,
+  rules: ShopRules,
+  collectionLocalId: string
+): Promise<{ qcStatus: string; issues: number }> {
+  const col = await prisma.collection.findUniqueOrThrow({ where: { id: collectionLocalId } });
+  const input: CollectionInput = {
+    shopifyId: col.shopifyId,
+    handle: col.handle,
+    title: col.title,
+    bodyHtml: col.bodyHtml,
+    seoTitle: col.seoTitle,
+    seoDescription: col.seoDescription,
+  };
+  const result = await runCollectionPipeline(input, rules, runId);
+  await prisma.optimizationDraft.create({
+    data: {
+      runId,
+      collectionId: col.id,
+      beforeJson: JSON.stringify(result.before),
+      afterJson: JSON.stringify(result.after),
+      qcStatus: result.qcStatus,
+      issuesJson: JSON.stringify(result.issues),
+    },
+  });
+  return { qcStatus: result.qcStatus, issues: result.issues.length };
+}
+
+// ---- Per-item apply (called by APPLY job handler) ------------------------
+export async function applyDraftById(
+  draftId: string,
+  opts: { shopId: string; runId?: string; force: boolean }
+): Promise<"APPLIED" | "SKIPPED"> {
+  const draft = await prisma.optimizationDraft.findUniqueOrThrow({
+    where: { id: draftId },
     include: { product: true, collection: true },
   });
+  if (draft.approval !== "APPROVED") return "SKIPPED";
+  // Safety: a RISK draft is never published unless explicitly forced.
+  if (draft.qcStatus === "RISK" && !opts.force) return "SKIPPED";
 
-  await prisma.optimizationRun.update({ where: { id: runId }, data: { status: "APPLYING" } });
+  const after = JSON.parse(draft.afterJson);
+  const before = JSON.parse(draft.beforeJson);
 
-  let applied = 0;
-  let skipped = 0;
-  let failed = 0;
-
-  for (const draft of drafts) {
-    if (draft.qcStatus === "RISK" && !force) {
-      skipped++;
-      continue;
-    }
-    const after = JSON.parse(draft.afterJson);
-    const before = JSON.parse(draft.beforeJson);
-
-    try {
-      if (draft.product) {
-        // Backup full snapshot before mutating.
-        await prisma.backup.create({
-          data: {
-            shopId: run.shopId,
-            resource: "PRODUCT",
-            shopifyId: draft.product.shopifyId,
-            snapshotJson: JSON.stringify(before),
-            runId,
-          },
-        });
-        await applyProductUpdate(run.shopId, draft.product.shopifyId, after);
-        await recordChanges(run.shopId, "PRODUCT", draft.product.shopifyId, before, after, runId);
-      } else if (draft.collection) {
-        await prisma.backup.create({
-          data: {
-            shopId: run.shopId,
-            resource: "COLLECTION",
-            shopifyId: draft.collection.shopifyId,
-            snapshotJson: JSON.stringify(before),
-            runId,
-          },
-        });
-        await applyCollectionUpdate(run.shopId, draft.collection.shopifyId, after);
-        await recordChanges(run.shopId, "COLLECTION", draft.collection.shopifyId, before, after, runId);
-      }
-      await prisma.optimizationDraft.update({
-        where: { id: draft.id },
-        data: { approval: "APPLIED", appliedAt: new Date() },
-      });
-      applied++;
-    } catch (err) {
-      failed++;
-      await prisma.optimizationDraft.update({
-        where: { id: draft.id },
-        data: { approval: "FAILED", errorMessage: err instanceof Error ? err.message : String(err) },
-      });
-    }
+  if (draft.product) {
+    await prisma.backup.create({
+      data: {
+        shopId: opts.shopId,
+        resource: "PRODUCT",
+        shopifyId: draft.product.shopifyId,
+        snapshotJson: JSON.stringify(before),
+        runId: opts.runId ?? null,
+      },
+    });
+    await applyProductUpdate(opts.shopId, draft.product.shopifyId, after);
+    await recordChanges(opts.shopId, "PRODUCT", draft.product.shopifyId, before, after, opts.runId);
+  } else if (draft.collection) {
+    await prisma.backup.create({
+      data: {
+        shopId: opts.shopId,
+        resource: "COLLECTION",
+        shopifyId: draft.collection.shopifyId,
+        snapshotJson: JSON.stringify(before),
+        runId: opts.runId ?? null,
+      },
+    });
+    await applyCollectionUpdate(opts.shopId, draft.collection.shopifyId, after);
+    await recordChanges(opts.shopId, "COLLECTION", draft.collection.shopifyId, before, after, opts.runId);
   }
 
-  await prisma.optimizationRun.update({
-    where: { id: runId },
-    data: { status: failed > 0 ? "APPLIED" : "APPLIED" },
+  await prisma.optimizationDraft.update({
+    where: { id: draft.id },
+    data: { approval: "APPLIED", appliedAt: new Date() },
   });
-
-  return { applied, skipped, failed };
+  return "APPLIED";
 }
 
 async function recordChanges(
@@ -203,7 +192,7 @@ async function recordChanges(
   shopifyId: string,
   before: Record<string, unknown>,
   after: Record<string, unknown>,
-  runId: string
+  runId?: string
 ) {
   const fields = ["title", "bodyHtml", "seoTitle", "seoDescription", "handle", "tags", "vendor"];
   for (const field of fields) {
@@ -212,7 +201,7 @@ async function recordChanges(
     const newVal = serialize(after[field]);
     if (oldVal === newVal) continue;
     await prisma.changeLog.create({
-      data: { shopId, resource, shopifyId, field, oldValue: oldVal, newValue: newVal, runId },
+      data: { shopId, resource, shopifyId, field, oldValue: oldVal, newValue: newVal, runId: runId ?? null },
     });
   }
 }
@@ -241,4 +230,26 @@ export async function rollback(backupId: string): Promise<void> {
       newValue: `Restored from backup ${backup.id}`,
     },
   });
+}
+
+// Roll back every product/collection touched by a job's run (job-level rollback).
+// Backups are linked to a run via runId; an APPLY job carries that runId.
+export async function rollbackByJob(jobId: string): Promise<{ restored: number }> {
+  const job = await prisma.job.findUniqueOrThrow({ where: { id: jobId } });
+  if (!job.runId) return { restored: 0 };
+  const runBackups = await prisma.backup.findMany({
+    where: { runId: job.runId },
+    orderBy: { createdAt: "asc" },
+  });
+  // Restore the earliest snapshot per resource (its pre-change state).
+  const seen = new Set<string>();
+  let restored = 0;
+  for (const b of runBackups) {
+    const key = `${b.resource}:${b.shopifyId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    await rollback(b.id);
+    restored++;
+  }
+  return { restored };
 }

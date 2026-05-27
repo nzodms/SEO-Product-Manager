@@ -23,8 +23,12 @@ cp .env.example .env        # puis renseigner GEMINI_API_KEY + APP_ENCRYPTION_KE
 npm install
 npm run db:push             # crée le schéma SQLite
 npm run db:seed             # (optionnel) bases de mots-clés par niche
-npm run dev                 # http://localhost:3000
+npm run dev                 # http://localhost:3000  (interface)
+npm run worker              # dans un 2e terminal : traite la file de jobs
 ```
+
+> L'**interface** (`npm run dev`) met les tâches en file ; le **worker**
+> (`npm run worker`) les exécute en arrière-plan. Les deux doivent tourner.
 
 ### Variables d'environnement
 
@@ -49,11 +53,34 @@ npm run dev                 # http://localhost:3000
 ## Workflow
 
 1. **Synchroniser** les produits/collections depuis Shopify (mise en cache locale).
-2. **Sélectionner** des produits + cocher les champs à optimiser + choisir le mode.
-3. **Générer** : le pipeline multi-agents produit un brouillon par produit.
-4. **Prévisualiser** le diff avant/après + verdict QC (OK / À vérifier / Risque).
-5. **Approuver** (un, lot de 10/50, tous les sûrs) puis **Publier** vers Shopify.
-6. Sauvegarde automatique avant écriture + **rollback** possible.
+2. **Sélectionner** des produits + cocher les champs à optimiser + choisir le mode
+   + la taille de lot (10 / 25 / 50).
+3. **Générer** : un **job** est mis en file. Le worker exécute le pipeline
+   multi-agents par lots et met à jour la progression en %.
+4. **Suivre** le job (page Jobs) : progression, logs par produit, pause / reprise /
+   annulation, retry automatique sur erreur Gemini/Shopify.
+5. **Prévisualiser** le diff avant/après + verdict QC (OK / À vérifier / Risque).
+6. **Approuver** (un, lot de 10/50, tous les sûrs) puis **Appliquer** : un job
+   d'application publie **uniquement les lignes validées** vers Shopify.
+7. Sauvegarde automatique avant écriture + **rollback** par job.
+
+> 🛑 L'IA ne publie **jamais** directement. Les jobs de génération produisent des
+> brouillons ; la publication est un job distinct, déclenché après validation.
+
+## File de jobs (asynchrone)
+
+| Aspect | Implémentation |
+|---|---|
+| File | DB-backed (`Job` + `JobItem`) — voir `src/lib/jobs/queue.ts` |
+| Worker | `npm run worker` (`src/worker/index.ts`), polling + claim atomique |
+| Statuts | `PENDING / RUNNING / PAUSED / COMPLETED / FAILED / CANCELLED` |
+| Progression | `progress` (0–100) + compteurs `succeeded` / `failed` |
+| Lots | configurables : **10 / 25 / 50** |
+| Retry | backoff exponentiel (2s→…→30s) sur throttle/429/5xx (`retry.ts`) |
+| Rate limit Shopify | pacing entre écritures + retry sur `THROTTLED` |
+| Pause / reprise | reprise idempotente (les éléments déjà `DONE` sont sautés) |
+| Logs | par élément (`JobItem.logJson`), visibles dans l'UI |
+| Évolutivité | remplacer `DbJobQueue` par une impl. **BullMQ/Redis** sans toucher au processor/worker |
 
 Voir [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) pour la conception complète
 (agents, prompts, DB, routes, mutations, sécurité, MVP → version avancée).

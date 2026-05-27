@@ -35,6 +35,7 @@ model Shop {
   backups     Backup[]
   changeLogs  ChangeLog[]
   keywordSets KeywordSet[]
+  jobs        Job[]
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -113,6 +114,7 @@ model OptimizationRun {
 
   drafts      OptimizationDraft[]
   agentLogs   AgentLog[]
+  jobs        Job[]
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -233,4 +235,75 @@ model KeywordSet {
   updatedAt   DateTime @updatedAt
 
   @@index([niche])
+}
+
+// ---------------------------------------------------------------------------
+// Job — DB-backed async queue entry. Processed out-of-request by the worker
+// (see src/worker). The DB *is* the queue for the MVP; swap DbJobQueue for a
+// BullMQ-backed queue later without touching the processor.
+// ---------------------------------------------------------------------------
+model Job {
+  id          String   @id @default(cuid())
+  shopId      String
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  // type: GENERATE_PRODUCTS | GENERATE_COLLECTIONS | APPLY | MATCHING
+  type        String
+  // status: PENDING | RUNNING | PAUSED | COMPLETED | FAILED | CANCELLED
+  status      String   @default("PENDING")
+
+  batchSize   Int      @default(25)
+  total       Int      @default(0)
+  processed   Int      @default(0)
+  succeeded   Int      @default(0)
+  failed      Int      @default(0)
+  progress    Int      @default(0) // 0..100
+
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(3)
+
+  // Job-level options (fields to optimize, safeMode, force, ...) as JSON.
+  payloadJson String   @default("{}")
+  // Job output summary (matching results, apply counts, ...) as JSON.
+  resultJson  String?
+  errorMessage String?
+
+  // Optional link to the run whose drafts this job generates/applies.
+  runId       String?
+  run         OptimizationRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  items       JobItem[]
+
+  createdAt   DateTime @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  updatedAt   DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([shopId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// JobItem — one unit of work (a product/collection/draft). Enables per-item
+// logs, resume (skip DONE items), and per-item retry counts.
+// ---------------------------------------------------------------------------
+model JobItem {
+  id          String   @id @default(cuid())
+  jobId       String
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  // Local id of the Product/Collection/Draft this item operates on.
+  resourceRef String
+  label       String?
+  // status: PENDING | RUNNING | DONE | FAILED | SKIPPED
+  status      String   @default("PENDING")
+  attempts    Int      @default(0)
+  errorMessage String?
+  // Per-item structured log (timings, agent verdicts, ...) as JSON.
+  logJson     String   @default("{}")
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([jobId, status])
 }

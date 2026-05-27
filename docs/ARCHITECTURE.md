@@ -13,9 +13,16 @@ Navigateur (Next.js App Router, React)
         │  fetch JSON
         ▼
 Route Handlers  src/app/api/**           ← validation zod, pas de secret côté client
-        │
+        │  enqueue (jobs)                    réponse immédiate, aucun timeout
+        ▼
+File de jobs (DB-backed)  src/lib/jobs/queue.ts   ── Job / JobItem
+        ▲                                  │ claim atomique
+        │ pause/resume/cancel/progress     ▼
+        │                          Worker  src/worker/index.ts   (npm run worker)
+        │                                  │  processJob (lots + retry + pacing)
+        │                                  ▼
         ├── Services
-        │     ├── runs/service.ts         orchestration des runs + apply + rollback
+        │     ├── runs/service.ts         génération par item + apply + rollback
         │     ├── shopify/service.ts      sync (read) + apply (write) Admin GraphQL
         │     └── agents/*Pipeline.ts     enchaînement des agents IA
         │
@@ -25,6 +32,10 @@ Route Handlers  src/app/api/**           ← validation zod, pas de secret côt�
         ▼
 Shopify Admin GraphQL API   +   Fournisseur IA (Gemini / Groq / OpenAI)
 ```
+
+> Les requêtes HTTP **mettent en file** ; le **worker** exécute le travail lourd
+> hors requête. La file est en base (les tables `Job`/`JobItem` *sont* la file) ;
+> elle évolue vers BullMQ/Redis en réimplémentant `JobQueue` sans changer le reste.
 
 Principes :
 - **Source de vérité = Shopify.** La DB locale est un *cache* + un journal
@@ -101,6 +112,8 @@ Schéma Prisma : `prisma/schema.prisma`.
 | `Backup` | snapshot complet avant écriture (rollback + export) |
 | `ChangeLog` | journal append-only des champs réellement publiés |
 | `KeywordSet` | bases de mots-clés par niche |
+| `Job` | entrée de file async (type, statut, progression, compteurs, lot, runId) |
+| `JobItem` | une unité de travail (produit/collection/draft) + log + retries |
 
 SQLite en dev (enums → String validés par zod) ; passer `provider = "postgresql"`
 pour la prod.
@@ -115,14 +128,18 @@ pour la prod.
 | `POST /api/shops/[id]/sync?resource=products\|collections` | synchroniser depuis Shopify |
 | `GET /api/products?shopId=` | produits en cache |
 | `GET /api/collections?shopId=` | collections en cache |
-| `POST /api/runs` | créer un run (génère les brouillons multi-agents) |
+| `POST /api/runs` | créer un run + **enqueue** un job de génération (async) |
 | `GET /api/runs/[id]` | run + brouillons (diff) |
 | `POST /api/runs/[id]/approve` | approbation en lot (sûrs / 10 / 50 / tous) |
-| `POST /api/runs/[id]/apply?force=` | publier les approuvés (backup + changelog) |
+| `POST /api/runs/[id]/apply?force=` | **enqueue** un job d'application des approuvés |
 | `PATCH /api/drafts/[id]` | approuver/rejeter / éditer un brouillon |
+| `GET /api/jobs?shopId=` | historique des jobs |
+| `GET /api/jobs/[id]` | statut + progression + logs par élément |
+| `POST /api/jobs/[id]/{pause\|resume\|cancel\|rollback}` | contrôle du job |
+| `GET /api/jobs/[id]/export?format=matrixify` | CSV Matrixify d'un job de matching |
 | `POST /api/backups/[id]/rollback` | restaurer un snapshot |
 | `GET /api/export?shopId=` | export CSV de sauvegarde |
-| `POST /api/matching` | matching produits/collections (JSON ou CSV Matrixify) |
+| `POST /api/matching` | **enqueue** un job de matching (1 item / ancien produit) |
 
 ---
 
@@ -182,14 +199,16 @@ images ayant un `src` + un `alt` non vide.
 ## 9. Workflow produit complet
 
 1. Sync produits → cache (`syncProducts`).
-2. L'utilisateur sélectionne N produits, coche les champs, choisit le mode.
-3. `POST /api/runs` → `createRun` → pour chaque produit :
+2. L'utilisateur sélectionne N produits, coche les champs, choisit le mode + le lot.
+3. `POST /api/runs` crée le run et **met en file un job** (réponse immédiate).
+4. Le worker traite chaque produit par lots :
    `analysis → keywords → (internal link) → title → meta → (handle) → tags →
-   description → alt text → guards → QC`.
-4. Brouillon stocké avec verdict (`OK` / `REVIEW` / `RISK`).
+   description → alt text → guards → QC` → brouillon avec verdict
+   (`OK` / `REVIEW` / `RISK`). Progression en %, logs par produit.
 5. Revue du diff, approbation, **export CSV** de sauvegarde recommandé.
-6. `apply` : backup → `productUpdate` (+ `productUpdateMedia`) → changelog.
-7. Rollback possible depuis un backup.
+6. `apply` met en file un **job d'application** : backup → `productUpdate`
+   (+ `productUpdateMedia`) → changelog, **uniquement sur les lignes approuvées**.
+7. Rollback par job (ou par backup) possible.
 
 ## 10. Workflow collection complet
 
@@ -255,17 +274,19 @@ collections jamais supprimées.
 
 - Connexion d'une boutique (token chiffré), sync produits/collections.
 - Pipeline multi-agents produit + collection sur Gemini 2.5 Flash.
+- **File de jobs asynchrone** (génération, application, matching, QC par lot)
+  avec progression, logs, pause/reprise, annulation, retry et rollback.
 - Diff avant/après, verdict QC, approbation en lot, publication GraphQL.
-- Garde-fous de sécurité, backup + export CSV, rollback.
-- Matching de base + export Matrixify.
+- Garde-fous de sécurité, backup + export CSV, rollback par job.
+- Matching + export Matrixify.
 
-Limites MVP : génération synchrone dans la requête (OK pour des lots ~50),
-matching heuristique, pas de file d'attente.
+Limites MVP : worker mono-process (un job à la fois), matching heuristique,
+file en base (pas encore Redis). Suffisant pour 50→500 produits / 150 collections.
 
 ## 15. Version avancée idéale
 
-- **Jobs asynchrones** (BullMQ/queue) + suivi de progression temps réel pour des
-  milliers de produits, avec gestion fine du *throttle* Shopify (coût GraphQL).
+- **BullMQ + Redis** + worker(s) multi-process / concurrents (l'interface
+  `JobQueue` est déjà prête pour ce remplacement).
 - **A/B testing SEO** et suivi des positions / clics (Search Console).
 - **Détection de doublons** sémantique (embeddings) sur titres/descriptions.
 - **Multi-provider par tâche** + repli automatique (Gemini → Groq → OpenAI).
@@ -273,4 +294,45 @@ matching heuristique, pas de file d'attente.
 - **Métafields SEO** et marchés/traductions (i18n) via GraphQL.
 - **Rôles & permissions**, audit complet, validation à plusieurs.
 - **Tests** (unitaires guards/pipelines, e2e UI) + CI.
+
+---
+
+## 16. File de jobs asynchrones (détail)
+
+Objectif : traiter sans timeout 50 / 100 / 500 produits, 150 collections, le
+matching et la génération/QC longue, tout en gardant **validation humaine avant
+publication**.
+
+**Composants** (`src/lib/jobs/`)
+- `queue.ts` — interface `JobQueue` + `DbJobQueue` (enqueue, `claimNext` atomique,
+  pause/resume/cancel). La DB *est* la file.
+- `retry.ts` — `withRetry` (backoff exponentiel 2s→30s + jitter) ; `isRetryableError`
+  détecte throttle / 429 / 5xx / réseau / quota / overloaded.
+- `handlers.ts` — `buildContext(job)` (1 fois) + `processItem(item, ctx)` qui
+  dispatche selon le type de job.
+- `processor.ts` — `processJob(jobId)` : itère les items par **lots** (10/25/50),
+  checkpoint pause/cancel entre lots, retry par item, **pacing** entre écritures
+  Shopify, met à jour progression/compteurs, finalise (et agrège les résultats de
+  matching).
+- `src/worker/index.ts` — boucle de polling : `claimNext` → `processJob`, arrêt
+  gracieux sur SIGINT/SIGTERM.
+
+**Types de jobs** : `GENERATE_PRODUCTS`, `GENERATE_COLLECTIONS`, `APPLY`, `MATCHING`.
+
+**Cycle de vie** : `PENDING → RUNNING → COMPLETED` (ou `PAUSED`, `CANCELLED`,
+`FAILED`). Retry au niveau **item** (compteur `attempts`) et au niveau **job**
+(jusqu'à `maxAttempts`, sinon `FAILED`).
+
+**Reprise idempotente** : à la reprise, seuls les items `PENDING`/`FAILED` sont
+retraités ; les `DONE` sont sautés → pas de double génération ni double
+publication.
+
+**Sécurité** : un job `GENERATE_*` ne publie jamais (il ne crée que des
+brouillons). Un job `APPLY` ne traite que les brouillons `APPROVED` et saute les
+`RISK` sauf `force=true`. Backup créé avant chaque écriture → rollback par job
+(`rollbackByJob`).
+
+**Rate limit Shopify** : pacing fixe entre items d'application + retry automatique
+sur `THROTTLED`. (Évolution : lecture de `extensions.cost.throttleStatus` pour un
+throttle adaptatif.)
 ```

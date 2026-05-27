@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { matchProducts, buildMatrixifyCsv } from "@/lib/agents/matching";
+import { prisma } from "@/lib/db";
+import { queue } from "@/lib/jobs/queue";
 
 const ProductRefSchema = z.object({
   shopifyId: z.string(),
@@ -13,27 +14,31 @@ const ProductRefSchema = z.object({
 });
 
 const BodySchema = z.object({
+  shopId: z.string(),
   olds: z.array(ProductRefSchema.extend({ collections: z.array(z.string()) })),
   candidates: z.array(ProductRefSchema),
-  format: z.enum(["json", "matrixify"]).default("json"),
+  batchSize: z.union([z.literal(10), z.literal(25), z.literal(50)]).default(25),
 });
 
+// Enqueues a MATCHING job (one item per old product) so matching hundreds of
+// products never times out. Results are aggregated on the job; pull the
+// Matrixify CSV from /api/jobs/[id]/export?format=matrixify when COMPLETED.
 export async function POST(req: Request) {
   const parsed = BodySchema.safeParse(await req.json());
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const { olds, candidates, format } = parsed.data;
-  const results = await matchProducts(olds, candidates);
+  const { shopId, olds, candidates, batchSize } = parsed.data;
 
-  if (format === "matrixify") {
-    const csv = buildMatrixifyCsv(results, candidates);
-    return new Response(csv, {
-      headers: {
-        "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": `attachment; filename="collections-match.csv"`,
-      },
-    });
-  }
-  return NextResponse.json({ results });
+  await prisma.shop.findUniqueOrThrow({ where: { id: shopId } });
+
+  const jobId = await queue.enqueue({
+    shopId,
+    type: "MATCHING",
+    batchSize,
+    payload: { olds, candidates },
+    items: olds.map((o, i) => ({ resourceRef: String(i), label: o.title })),
+  });
+
+  return NextResponse.json({ jobId, queued: olds.length }, { status: 201 });
 }

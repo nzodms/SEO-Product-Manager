@@ -12,6 +12,7 @@ export default function CollectionsPage() {
   const [shopId, setShopId] = useState("");
   const [collections, setCollections] = useState<Collection[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchSize, setBatchSize] = useState<10 | 25 | 50>(25);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
 
@@ -48,7 +49,7 @@ export default function CollectionsPage() {
 
   async function launch() {
     setBusy(true);
-    setMsg("Génération des descriptions de collections…");
+    setMsg("Mise en file d'attente…");
     const r = await fetch("/api/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -57,11 +58,12 @@ export default function CollectionsPage() {
         mode: "OPTIMIZE_COLLECTIONS",
         resourceIds: [...selected],
         fields: { description: true, meta: true, title: false, handle: false, tags: false, altText: false, internalLinking: true },
+        batchSize,
       }),
     });
     const d = await r.json();
     setBusy(false);
-    if (r.ok) router.push(`/runs/${d.runId}`);
+    if (r.ok) router.push(`/jobs/${d.jobId}`);
     else setMsg(`Erreur : ${JSON.stringify(d.error)}`);
   }
 
@@ -72,6 +74,15 @@ export default function CollectionsPage() {
           {shops.map((s) => <option key={s.id} value={s.id}>{s.displayName}</option>)}
         </select>
         <button className="btn-secondary" onClick={sync} disabled={busy || !shopId}>Synchroniser</button>
+        <select
+          className="rounded border border-gray-300 px-2 py-1.5 text-sm"
+          value={batchSize}
+          onChange={(e) => setBatchSize(Number(e.target.value) as 10 | 25 | 50)}
+        >
+          <option value={10}>Lot 10</option>
+          <option value={25}>Lot 25</option>
+          <option value={50}>Lot 50</option>
+        </select>
         <button className="btn-primary" onClick={launch} disabled={busy || selected.size === 0}>
           Optimiser {selected.size} collection(s)
         </button>

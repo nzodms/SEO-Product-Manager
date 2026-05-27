@@ -59,16 +59,16 @@ export default function RunPage({ params }: { params: { id: string } }) {
 
   async function apply(force = false) {
     setBusy(true);
-    setMsg("Publication vers Shopify…");
+    setMsg("Mise en file de publication…");
     const r = await fetch(`/api/runs/${params.id}/apply?force=${force}`, { method: "POST" });
     const d = await r.json();
-    setMsg(
-      r.ok
-        ? `Appliqués : ${d.applied} · Ignorés (risque) : ${d.skipped} · Échecs : ${d.failed}`
-        : `Erreur : ${d.error}`
-    );
     setBusy(false);
-    load();
+    if (r.ok) {
+      // Application runs async in the worker; follow it on the job page.
+      window.location.href = `/jobs/${d.jobId}`;
+    } else {
+      setMsg(`Erreur : ${d.error}`);
+    }
   }
 
   if (!data) return <p className="text-sm text-gray-500">Chargement…</p>;
