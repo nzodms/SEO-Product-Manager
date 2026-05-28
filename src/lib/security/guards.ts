@@ -1,0 +1,242 @@
+// Deterministic safety guards. These run in code (not via the LLM) so the
+// hard rules are enforced regardless of what any agent returns. The QC *agent*
+// is a second opinion; THIS is the gate that cannot be talked around.
+
+export interface ProductImage {
+  shopifyId?: string;
+  src: string;
+  altText: string;
+  position: number;
+}
+
+export interface DraftFields {
+  title?: string;
+  bodyHtml?: string;
+  seoTitle?: string;
+  seoDescription?: string;
+  handle?: string;
+  tags?: string[];
+  vendor?: string;
+  images?: ProductImage[];
+}
+
+export interface RunContext {
+  safeMode: boolean; // true => UPDATE mode: never change handle/images
+  metaSuffix: string; // required meta-description ending
+  storeDomain: string; // current store domain (links must not point elsewhere)
+  oldDomains?: string[]; // legacy domains that must never appear
+  existingTitles?: string[]; // for duplicate detection
+  existingBrandedNames?: string[];
+}
+
+export interface GuardIssue {
+  code: string;
+  severity: "info" | "warn" | "error";
+  message: string;
+  field: string;
+}
+
+const BAD_ENDINGS = ["et", "ou", "en", "de", "-", "à", "le", "la"];
+const INTERNAL_JARGON = [
+  "maillage interne",
+  "mot-clé principal",
+  "mot clé principal",
+  "référencement",
+  "cette page travaille",
+];
+
+const META_MAX = 160;
+
+export function runGuards(
+  before: DraftFields,
+  after: DraftFields,
+  ctx: RunContext
+): GuardIssue[] {
+  const issues: GuardIssue[] = [];
+  const add = (
+    severity: GuardIssue["severity"],
+    code: string,
+    field: string,
+    message: string
+  ) => issues.push({ severity, code, field, message });
+
+  // 1. Handle protection in safe (update) mode.
+  if (
+    ctx.safeMode &&
+    after.handle !== undefined &&
+    before.handle !== undefined &&
+    after.handle !== before.handle
+  ) {
+    add(
+      "error",
+      "HANDLE_LOCKED",
+      "handle",
+      `Mode mise à jour : le handle ne doit pas changer ("${before.handle}" → "${after.handle}").`
+    );
+  }
+
+  // 2. Image protection: src/position/count must never change here.
+  if (after.images && before.images) {
+    if (after.images.length !== before.images.length) {
+      add("error", "IMAGE_COUNT_CHANGED", "images", "Le nombre d'images a changé.");
+    }
+    for (const img of after.images) {
+      const orig = before.images.find((b) => b.position === img.position);
+      if (orig && orig.src !== img.src) {
+        add(
+          "error",
+          "IMAGE_SRC_CHANGED",
+          "images",
+          `Image src modifiée en position ${img.position}.`
+        );
+      }
+      // 3. Alt text must be empty when src is empty.
+      if ((!img.src || img.src.trim() === "") && img.altText && img.altText.trim() !== "") {
+        add(
+          "error",
+          "ALT_WITHOUT_SRC",
+          "images",
+          `Alt text rempli alors que l'image n'a pas de src (position ${img.position}).`
+        );
+      }
+    }
+  }
+
+  // 4. Meta description length + required suffix.
+  if (after.seoDescription !== undefined) {
+    const meta = after.seoDescription.trim();
+    if (meta.length > META_MAX) {
+      add(
+        "error",
+        "META_TOO_LONG",
+        "seoDescription",
+        `Meta description ${meta.length} caractères (max ${META_MAX}).`
+      );
+    }
+    if (!meta.endsWith(ctx.metaSuffix)) {
+      add(
+        "error",
+        "META_SUFFIX_MISSING",
+        "seoDescription",
+        `La meta description doit se terminer par "${ctx.metaSuffix}".`
+      );
+    }
+  }
+
+  // 5. Title quality: bad trailing words.
+  if (after.title) {
+    const t = after.title.trim().replace(/[.!?]+$/, "");
+    const lastWord = t.split(/\s+/).pop()?.toLowerCase() ?? "";
+    if (BAD_ENDINGS.includes(lastWord) || t.endsWith("-")) {
+      add(
+        "error",
+        "TITLE_BAD_ENDING",
+        "title",
+        `Le titre se termine par un mot interdit ("${lastWord}").`
+      );
+    }
+    // 6. Duplicate title detection.
+    if (
+      ctx.existingTitles?.some(
+        (x) => x.trim().toLowerCase() === after.title!.trim().toLowerCase()
+      )
+    ) {
+      add("warn", "TITLE_DUPLICATE", "title", "Titre déjà utilisé par un autre produit.");
+    }
+  }
+
+  // 7. Internal jargon / internal notes leaking into public text.
+  for (const field of ["bodyHtml", "seoDescription", "seoTitle", "title"] as const) {
+    const value = after[field];
+    if (typeof value === "string") {
+      const lower = value.toLowerCase();
+      for (const term of INTERNAL_JARGON) {
+        if (lower.includes(term)) {
+          add(
+            "error",
+            "INTERNAL_JARGON",
+            field,
+            `Terme interne interdit dans le texte public : "${term}".`
+          );
+        }
+      }
+      // 8. Links to legacy domains.
+      for (const old of ctx.oldDomains ?? []) {
+        if (old && lower.includes(old.toLowerCase())) {
+          add(
+            "error",
+            "LEGACY_DOMAIN_LINK",
+            field,
+            `Lien vers un ancien domaine détecté : "${old}".`
+          );
+        }
+      }
+    }
+  }
+
+  return issues;
+}
+
+export function verdictFromIssues(issues: GuardIssue[]): "OK" | "REVIEW" | "RISK" {
+  if (issues.some((i) => i.severity === "error")) return "RISK";
+  if (issues.some((i) => i.severity === "warn")) return "REVIEW";
+  return "OK";
+}
+
+// Normalized similarity (0..1) between two strings via Levenshtein distance.
+export function similarityRatio(a: string, b: string): number {
+  const s1 = a.trim().toLowerCase();
+  const s2 = b.trim().toLowerCase();
+  if (!s1 && !s2) return 1;
+  const dist = levenshtein(s1, s2);
+  const maxLen = Math.max(s1.length, s2.length) || 1;
+  return 1 - dist / maxLen;
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let curr = new Array<number>(n + 1);
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+// Branded-name checks: never duplicate, never too similar to an existing one.
+export function checkBrandedName(name: string | null | undefined, existing: string[]): GuardIssue[] {
+  if (!name) return [];
+  const issues: GuardIssue[] = [];
+  const norm = name.trim().toLowerCase();
+  for (const ex of existing) {
+    const exNorm = ex.trim().toLowerCase();
+    if (!exNorm || exNorm === norm) {
+      if (exNorm === norm) {
+        issues.push({
+          severity: "error",
+          code: "BRANDED_DUPLICATE",
+          field: "title",
+          message: `Nom brandé déjà utilisé : "${name}".`,
+        });
+      }
+      continue;
+    }
+    if (similarityRatio(norm, exNorm) >= 0.8) {
+      issues.push({
+        severity: "warn",
+        code: "BRANDED_SIMILAR",
+        field: "title",
+        message: `Nom brandé trop proche de "${ex}".`,
+      });
+    }
+  }
+  return issues;
+}
