@@ -1,4 +1,7 @@
-import "dotenv/config";
+// Robust env loading — walks up from cwd / this file to find the repo root,
+// loads .env + .env.local, and logs which critical vars are missing.
+// Relative path on purpose: works regardless of how tsx was invoked.
+import "../lib/env";
 import { queue } from "@/lib/jobs/queue";
 import { processJob } from "@/lib/jobs/processor";
 import { sleep } from "@/lib/jobs/retry";

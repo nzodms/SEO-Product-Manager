@@ -1,3 +1,5 @@
+// Load .env (and .env.local) automatically, regardless of cwd.
+import "../src/lib/env";
 import { PrismaClient } from "@prisma/client";
 import { NICHE_KEYWORDS } from "../src/lib/config/niches";
 
