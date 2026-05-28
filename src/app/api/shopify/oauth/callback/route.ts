@@ -20,8 +20,10 @@ export async function GET(req: Request) {
   const code = sp.get("code");
   const state = sp.get("state");
 
-  const fail = (msg: string) =>
-    NextResponse.redirect(`${url.origin}/settings?oauth_error=${encodeURIComponent(msg)}`);
+  const fail = (msg: string) => {
+    console.error(`[api/shopify/oauth/callback] ${msg} (shop=${shopParam || "?"})`);
+    return NextResponse.redirect(`${url.origin}/settings?oauth_error=${encodeURIComponent(msg)}`);
+  };
 
   if (!shopParam || !code || !state || !isValidShopDomain(shopParam)) {
     return fail("Paramètres OAuth manquants ou invalides.");

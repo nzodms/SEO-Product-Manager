@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { safeReadJson } from "@/components/safeJson";
 
 interface Shop {
   id: string;
@@ -41,8 +42,18 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
 
-  function load() {
-    fetch("/api/shops").then((r) => r.json()).then((d) => setShops(d.shops ?? []));
+  async function load() {
+    const r = await fetch("/api/shops").catch(() => null);
+    if (!r) {
+      setBanner("Impossible de joindre le serveur (/api/shops).");
+      return;
+    }
+    const j = await safeReadJson(r);
+    if (!j.ok) {
+      setBanner(`Erreur de chargement des boutiques : ${j.error}`);
+      return;
+    }
+    setShops(j.data?.shops ?? []);
   }
 
   useEffect(() => {
@@ -80,15 +91,15 @@ export default function SettingsPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const d = await r.json();
+    const j = await safeReadJson(r);
     setBusy(false);
-    if (!r.ok) {
-      setMsg(`Erreur : ${JSON.stringify(d.error)}`);
+    if (!j.ok) {
+      setMsg(`Erreur : ${j.error}`);
       return;
     }
-    if (mode === "OAUTH" && d.authorizeStart) {
+    if (mode === "OAUTH" && j.data?.authorizeStart) {
       // Redirect to Shopify's authorize screen to obtain the token.
-      window.location.href = d.authorizeStart;
+      window.location.href = j.data.authorizeStart;
       return;
     }
     setMsg("Boutique ajoutée.");
@@ -99,15 +110,18 @@ export default function SettingsPage() {
   async function testConnection(id: string) {
     setTesting(id);
     const r = await fetch(`/api/shops/${id}/test`, { method: "POST" });
-    const d = await r.json();
+    const j = await safeReadJson(r);
     setTesting(null);
-    setBanner(
-      d.status === "CONNECTED"
-        ? `Connecté à « ${d.shopName} » (${d.domain}).`
-        : d.status === "NOT_CONNECTED"
-          ? "Aucun token : connecte la boutique via Shopify."
-          : `Test : ${d.status}${d.error ? ` — ${d.error}` : ""}`
-    );
+    const d = j.data ?? {};
+    if (d.status === "CONNECTED") {
+      setBanner(`Connecté à « ${d.shopName} » (${d.domain}).`);
+    } else if (d.status === "NOT_CONNECTED") {
+      setBanner("Aucun token : connecte la boutique via Shopify.");
+    } else if (d.status) {
+      setBanner(`Test : ${d.status}${d.source ? ` (source : ${d.source})` : ""}${d.error ? ` — ${d.error}` : ""}`);
+    } else {
+      setBanner(`Erreur : ${j.error}`);
+    }
     load();
   }
 

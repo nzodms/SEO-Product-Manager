@@ -10,28 +10,39 @@ import {
 export const runtime = "nodejs";
 
 // Begins the OAuth round-trip: saves a CSRF state nonce, then redirects the
-// merchant to Shopify's authorize screen for the configured shop.
+// merchant to Shopify's authorize screen. This endpoint is a full-page
+// navigation, so errors redirect back to /settings (never raw JSON / blank).
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const shopId = searchParams.get("shopId");
-  if (!shopId) return NextResponse.json({ error: "shopId requis" }, { status: 400 });
+  const origin = appOriginFromRequest(req);
+  const settingsError = (msg: string) =>
+    NextResponse.redirect(`${origin}/settings?oauth_error=${encodeURIComponent(msg)}`);
 
-  const shop = await prisma.shop.findUnique({ where: { id: shopId } });
-  if (!shop) return NextResponse.json({ error: "Boutique introuvable" }, { status: 404 });
-  if (shop.authMode !== "OAUTH" || !shop.clientId) {
-    return NextResponse.json({ error: "Cette boutique n'est pas en mode OAuth." }, { status: 400 });
+  try {
+    const { searchParams } = new URL(req.url);
+    const shopId = searchParams.get("shopId");
+    if (!shopId) return settingsError("shopId manquant.");
+
+    const shop = await prisma.shop.findUnique({ where: { id: shopId } });
+    if (!shop) return settingsError("Boutique introuvable.");
+    if (shop.authMode !== "OAUTH" || !shop.clientId) {
+      return settingsError("Cette boutique n'est pas en mode OAuth (Client ID manquant).");
+    }
+
+    const state = randomState();
+    await prisma.shop.update({ where: { id: shopId }, data: { oauthState: state } });
+
+    const redirectUri = `${origin}/api/shopify/oauth/callback`;
+    const url = buildAuthorizeUrl({
+      shop: shop.domain,
+      clientId: shop.clientId,
+      scopes: shop.scopes || DEFAULT_SCOPES.join(","),
+      redirectUri,
+      state,
+    });
+    return NextResponse.redirect(url);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[api/shopify/oauth/start] ${message}`);
+    return settingsError(`Démarrage OAuth échoué : ${message}`);
   }
-
-  const state = randomState();
-  await prisma.shop.update({ where: { id: shopId }, data: { oauthState: state } });
-
-  const redirectUri = `${appOriginFromRequest(req)}/api/shopify/oauth/callback`;
-  const url = buildAuthorizeUrl({
-    shop: shop.domain,
-    clientId: shop.clientId,
-    scopes: shop.scopes || DEFAULT_SCOPES.join(","),
-    redirectUri,
-    state,
-  });
-  return NextResponse.redirect(url);
 }

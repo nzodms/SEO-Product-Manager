@@ -52,59 +52,88 @@ const OauthShop = z.object({
 const CreateShopSchema = z.discriminatedUnion("authMode", [TokenShop, OauthShop]);
 
 export async function POST(req: Request) {
-  const parsed = CreateShopSchema.safeParse(await req.json());
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ ok: false, error: "Corps de requête JSON invalide." }, { status: 400 });
+  }
+
+  const parsed = CreateShopSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, error: "Champs invalides : " + parsed.error.issues.map((i) => i.path.join(".")).join(", ") },
+      { status: 400 }
+    );
   }
   const data = parsed.data;
 
   const domain = normalizeShopDomain(data.domain);
   if (!isValidShopDomain(domain)) {
     return NextResponse.json(
-      { error: "Domaine invalide. Format attendu : ta-boutique.myshopify.com" },
+      { ok: false, error: "Domaine invalide. Format attendu : ta-boutique.myshopify.com" },
       { status: 400 }
     );
   }
 
-  const baseRules =
-    data.preset && SHOP_PRESETS[data.preset] ? SHOP_PRESETS[data.preset] : ShopRulesSchema.parse({});
-  const mergedRules = ShopRulesSchema.parse({ ...baseRules, ...(data.rules ?? {}) });
+  try {
+    const baseRules =
+      data.preset && SHOP_PRESETS[data.preset] ? SHOP_PRESETS[data.preset] : ShopRulesSchema.parse({});
+    const mergedRules = ShopRulesSchema.parse({ ...baseRules, ...(data.rules ?? {}) });
 
-  if (data.authMode === "TOKEN") {
+    if (data.authMode === "TOKEN") {
+      const shop = await prisma.shop.create({
+        data: {
+          authMode: "TOKEN",
+          domain,
+          displayName: data.displayName,
+          accessTokenEnc: encryptToken(data.accessToken),
+          apiVersion: data.apiVersion ?? "2025-01",
+          rulesJson: JSON.stringify(mergedRules),
+          connectionStatus: "TOKEN_PRESENT",
+        },
+        select: { id: true, domain: true, displayName: true, authMode: true },
+      });
+      return NextResponse.json({ ok: true, shop }, { status: 201 });
+    }
+
+    // OAUTH: store credentials only; the access token is obtained after the
+    // merchant authorizes via /api/shopify/oauth/start → Shopify → callback.
     const shop = await prisma.shop.create({
       data: {
-        authMode: "TOKEN",
+        authMode: "OAUTH",
         domain,
         displayName: data.displayName,
-        accessTokenEnc: encryptToken(data.accessToken),
+        clientId: data.clientId,
+        clientSecretEnc: encryptToken(data.clientSecret),
+        scopes: (data.scopes && data.scopes.trim()) || DEFAULT_SCOPES.join(","),
         apiVersion: data.apiVersion ?? "2025-01",
         rulesJson: JSON.stringify(mergedRules),
-        connectionStatus: "TOKEN_PRESENT",
+        connectionStatus: "NOT_CONNECTED",
       },
       select: { id: true, domain: true, displayName: true, authMode: true },
     });
-    return NextResponse.json({ shop }, { status: 201 });
+    return NextResponse.json(
+      { ok: true, shop, authorizeStart: `/api/shopify/oauth/start?shopId=${shop.id}` },
+      { status: 201 }
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const hint = classifyServerError(message);
+    console.error(`[api/shops POST] ${hint}: ${message}`);
+    return NextResponse.json(
+      { ok: false, error: `Échec de l'enregistrement (${hint}). ${message}` },
+      { status: 500 }
+    );
   }
+}
 
-  // OAUTH: store credentials only; the access token is obtained after the
-  // merchant authorizes via /api/shopify/oauth/start → Shopify → callback.
-  const shop = await prisma.shop.create({
-    data: {
-      authMode: "OAUTH",
-      domain,
-      displayName: data.displayName,
-      clientId: data.clientId,
-      clientSecretEnc: encryptToken(data.clientSecret),
-      scopes: (data.scopes && data.scopes.trim()) || DEFAULT_SCOPES.join(","),
-      apiVersion: data.apiVersion ?? "2025-01",
-      rulesJson: JSON.stringify(mergedRules),
-      connectionStatus: "NOT_CONNECTED",
-    },
-    select: { id: true, domain: true, displayName: true, authMode: true },
-  });
-  // Client triggers the OAuth redirect with this URL.
-  return NextResponse.json(
-    { shop, authorizeStart: `/api/shopify/oauth/start?shopId=${shop.id}` },
-    { status: 201 }
-  );
+// Best-effort source classification for server logs + UI messages.
+function classifyServerError(message: string): string {
+  const m = message.toLowerCase();
+  if (m.includes("app_encryption_key")) return "APP_ENCRYPTION_KEY manquante";
+  if (m.includes("database_url") || m.includes("postgres") || m.includes("econnrefused") || m.includes("p1001") || m.includes("can't reach database"))
+    return "connexion base de données (DATABASE_URL)";
+  if (m.includes("unique constraint") || m.includes("p2002")) return "boutique déjà existante (domaine en double)";
+  return "erreur serveur";
 }

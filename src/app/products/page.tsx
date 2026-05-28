@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { safeReadJson } from "@/components/safeJson";
 
 interface Shop {
   id: string;
   displayName: string;
   domain: string;
+  connectionStatus?: string;
 }
 interface Product {
   id: string;
@@ -50,33 +52,49 @@ export default function ProductsPage() {
 
   useEffect(() => {
     fetch("/api/shops")
-      .then((r) => r.json())
-      .then((d) => {
-        setShops(d.shops ?? []);
-        if (d.shops?.[0]) setShopId(d.shops[0].id);
-      });
+      .then(safeReadJson)
+      .then((j) => {
+        const list: Shop[] = j.data?.shops ?? [];
+        setShops(list);
+        if (list[0]) setShopId(list[0].id);
+        if (!j.ok) setMsg(`Erreur chargement boutiques : ${j.error}`);
+      })
+      .catch(() => setMsg("Serveur injoignable (/api/shops)."));
   }, []);
+
+  async function loadProducts(id: string) {
+    const r = await fetch(`/api/products?shopId=${id}`).catch(() => null);
+    if (!r) return;
+    const j = await safeReadJson(r);
+    setProducts(j.data?.products ?? []);
+  }
 
   useEffect(() => {
     if (!shopId) return;
-    fetch(`/api/products?shopId=${shopId}`)
-      .then((r) => r.json())
-      .then((d) => setProducts(d.products ?? []));
+    loadProducts(shopId);
   }, [shopId]);
 
   const safeMode = mode === "UPDATE_PRODUCTS";
+  const currentShop = shops.find((s) => s.id === shopId);
 
   async function sync() {
     setBusy(true);
     setMsg("Synchronisation depuis Shopify…");
     const r = await fetch(`/api/shops/${shopId}/sync?resource=products`, { method: "POST" });
-    const d = await r.json();
-    setMsg(r.ok ? `${d.synced} produits synchronisés.` : `Erreur : ${d.error}`);
-    if (r.ok) {
-      const pr = await fetch(`/api/products?shopId=${shopId}`).then((x) => x.json());
-      setProducts(pr.products ?? []);
-    }
+    const j = await safeReadJson(r);
+    setMsg(j.ok ? `${j.data?.synced ?? 0} produits synchronisés.` : `Erreur de synchronisation : ${j.error}`);
+    if (j.ok) await loadProducts(shopId);
     setBusy(false);
+  }
+
+  // Explains exactly why "Générer" is disabled (or empty if it's enabled).
+  function disabledReason(): string {
+    if (busy) return "Traitement en cours…";
+    if (shops.length === 0) return "Aucune boutique : ajoute-la dans Réglages.";
+    if (!shopId) return "Sélectionne une boutique.";
+    if (products.length === 0) return "Aucun produit en cache : clique « Synchroniser depuis Shopify » (ou « + Ajouter des produits »).";
+    if (selected.size === 0) return "Sélectionne au moins un produit (5 / 50 / Tout).";
+    return "";
   }
 
   function toggle(id: string) {
@@ -107,11 +125,11 @@ export default function ProductsPage() {
         batchSize,
       }),
     });
-    const d = await r.json();
+    const j = await safeReadJson(r);
     setBusy(false);
-    // Generation runs async in the worker; follow progress on the job page.
-    if (r.ok) router.push(`/jobs/${d.jobId}`);
-    else setMsg(`Erreur : ${JSON.stringify(d.error)}`);
+    // Generation runs async; follow progress on the job page.
+    if (j.ok && j.data?.jobId) router.push(`/jobs/${j.data.jobId}`);
+    else setMsg(`Erreur : ${j.error}`);
   }
 
   return (
@@ -175,13 +193,28 @@ export default function ProductsPage() {
             );
           })}
         </div>
-        <button
-          className="btn-primary"
-          disabled={busy || selected.size === 0}
-          onClick={launch}
-        >
-          Générer pour {selected.size} produit(s)
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            className="btn-primary"
+            disabled={disabledReason() !== ""}
+            onClick={launch}
+          >
+            Générer pour {selected.size} produit(s)
+          </button>
+          {disabledReason() && <span className="text-sm text-warn">{disabledReason()}</span>}
+        </div>
+        {currentShop && currentShop.connectionStatus !== "CONNECTED" && (
+          <p className="text-xs text-warn">
+            Boutique non confirmée connectée (statut : {currentShop.connectionStatus ?? "inconnu"}).
+            La synchronisation et la publication nécessitent une connexion valide —
+            teste-la dans <a className="underline" href="/settings">Réglages</a>.
+          </p>
+        )}
+        <p className="text-xs text-gray-400">
+          La génération est asynchrone : suis-la sur la page Job. Si elle reste à 0 %,
+          lance le traitement avec « Traiter maintenant » (page Jobs) ou {""}
+          <code>npm run worker</code> en local.
+        </p>
       </div>
 
       <div className="card">
